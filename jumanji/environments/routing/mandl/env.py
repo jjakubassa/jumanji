@@ -1,3 +1,17 @@
+# Copyright 2022 InstaDeep Ltd. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from functools import cached_property
 from typing import Final, Optional, Sequence
 
@@ -112,9 +126,7 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
             ),
             # fmt: on
             routes=jnp.full((self.max_num_routes, 2), -1, dtype=jnp.int32),
-            capacity=jnp.full(
-                (self.max_num_routes,), self.max_capacity, dtype=jnp.int32
-            ),
+            capacity=jnp.full((self.max_num_routes,), self.max_capacity, dtype=jnp.int32),
             key=key,
         )
 
@@ -122,9 +134,7 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
 
         return state, timestep
 
-    def step(
-        self, state: State, action: chex.Numeric
-    ) -> tuple[State, TimeStep[Observation]]:
+    def step(self, state: State, action: chex.Numeric) -> tuple[State, TimeStep[Observation]]:
         raise NotImplementedError
 
     @cached_property
@@ -222,19 +232,22 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
     def close(self) -> None:
         raise NotImplementedError
 
-    def get_action_mask(
+    def _get_action_mask(
         self, routes: jnp.ndarray, action_space: jnp.ndarray, network: jnp.ndarray
     ) -> jnp.ndarray:
-        """Return a mask that indicates which nodes should not be considered for the next step in any route.
+        """Return a mask that indicates which nodes should not be considered for the next step in
+        any route.
 
         Args:
-            routes: A matrix of shape (num_routes, 2) with node indices representing origin and destination for each route
+            routes: A matrix of shape (num_routes, 2) with node indices representing origin and
+                 destination for each route
             action_space: A matrix of shape (num_routes, num_nodes) indicating valid actions
-            network: A matrix of shape (num_nodes, num_nodes) with 1 indicating connections between nodes
+            network: A matrix of shape (num_nodes, num_nodes) with 1 indicating connections between
+                 nodes
 
         Returns:
-            A boolean mask of shape (num_routes, num_nodes) with True indicating nodes that should not be
-            considered for each route
+            A boolean mask of shape (num_routes, num_nodes) with True indicating nodes that should
+            be considered for each route
 
         Example:
             >>> mandl = Mandl()
@@ -258,9 +271,7 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
             0, routes.shape[0], _body_fun, jnp.zeros_like(action_space, jnp.bool)
         )
 
-    def _get_mask_per_route(
-        self, network: jnp.ndarray, route: jnp.ndarray
-    ) -> jnp.ndarray:
+    def _get_mask_per_route(self, network: jnp.ndarray, route: jnp.ndarray) -> jnp.ndarray:
         raise NotImplementedError
 
     def _state_to_observation(self, state: State) -> Observation:
@@ -281,9 +292,34 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
     def _has_no_cycle(route: jnp.ndarray) -> jnp.ndarray:
         raise NotImplementedError
 
-    def get_route_shortest_paths(
-        self, network: Network, routes: Routes, route_idx: int
-    ) -> jnp.ndarray:
+    def _find_paths(
+        self,
+        network: Network,
+        routes: Routes,
+        start: int,
+        end: int,
+        transfer_penalty: float = 2.0,
+    ) -> tuple[list[DirectPath], list[TransferPath]]:
+        """Find all valid paths between start and end, including transfers"""
+        # Calculate shortest paths for each route
+        route_paths = []
+        for r in range(routes.n_routes):
+            route_paths.append(self._get_route_shortest_paths(network, routes, r))
+
+        # Always check direct paths first
+        direct_paths = self._find_direct_paths(route_paths, start, end)
+
+        # Only look for transfer paths if no direct paths exist
+        transfer_paths = (
+            []
+            if direct_paths
+            else self._find_transfer_paths(route_paths, start, end, transfer_penalty)
+        )
+
+        return direct_paths, transfer_paths
+
+    @staticmethod
+    def _get_route_shortest_paths(network: Network, routes: Routes, route_idx: int) -> jnp.ndarray:
         """Get shortest paths for a route by masking the network"""
         route = routes.route_edges[route_idx]
         dist = jnp.where(route == 1, network.weights, jnp.inf)
@@ -296,28 +332,25 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         for intermediate in range(n_stops):
             for start in range(n_stops):
                 for end in range(n_stops):
-                    dist_via_intermediate = (
-                        dist[start, intermediate] + dist[intermediate, end]
-                    )
+                    dist_via_intermediate = dist[start, intermediate] + dist[intermediate, end]
                     dist = dist.at[start, end].set(
                         jnp.minimum(dist[start, end], dist_via_intermediate)
                     )
         return dist
 
-    def find_direct_paths(
-        self, route_paths: list[jnp.ndarray], start: int, end: int
+    @staticmethod
+    def _find_direct_paths(
+        route_paths: list[jnp.ndarray], start: int, end: int
     ) -> list[DirectPath]:
         direct_paths = []
         for r in range(len(route_paths)):
             cost = route_paths[r][start, end]
             if cost < jnp.inf:
-                direct_paths.append(
-                    DirectPath(route=r, cost=float(cost), start=start, end=end)
-                )
+                direct_paths.append(DirectPath(route=r, cost=float(cost), start=start, end=end))
         return sorted(direct_paths, key=lambda x: x.cost)
 
-    def find_transfer_paths(
-        self,
+    @staticmethod
+    def _find_transfer_paths(
         route_paths: list[jnp.ndarray],
         start: int,
         end: int,
@@ -352,29 +385,3 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
                             )
                         )
         return sorted(transfer_paths, key=lambda x: x.total_cost)
-
-    def find_paths(
-        self,
-        network: Network,
-        routes: Routes,
-        start: int,
-        end: int,
-        transfer_penalty: float = 2.0,
-    ) -> tuple[list[DirectPath], list[TransferPath]]:
-        """Find all valid paths between start and end, including transfers"""
-        # Calculate shortest paths for each route
-        route_paths = []
-        for r in range(routes.n_routes):
-            route_paths.append(self.get_route_shortest_paths(network, routes, r))
-
-        # Always check direct paths first
-        direct_paths = self.find_direct_paths(route_paths, start, end)
-
-        # Only look for transfer paths if no direct paths exist
-        transfer_paths = (
-            []
-            if direct_paths
-            else self.find_transfer_paths(route_paths, start, end, transfer_penalty)
-        )
-
-        return direct_paths, transfer_paths
