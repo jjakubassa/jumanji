@@ -1,17 +1,17 @@
 [build-system]
-requires=["setuptools>=62.6"]
-build-backend="setuptools.build_meta"
+requires = ["setuptools>=62.6"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name="jumanji"
-authors=[{name="InstaDeep Ltd", email="clement.bonnet16@gmail.com"}]
-dynamic=["version", "dependencies", "optional-dependencies"]
-license={file="LICENSE"}
-description="A diverse suite of scalable reinforcement learning environments in JAX"
-readme ="README.md"
-requires-python=">=3.10"
-keywords=["reinforcement-learning", "python", "jax"]
-classifiers=[
+name = "jumanji"
+authors = [{ name = "InstaDeep Ltd", email = "clement.bonnet16@gmail.com" }]
+dynamic = ["version", "dependencies", "optional-dependencies"]
+license = { file = "LICENSE" }
+description = "A diverse suite of scalable reinforcement learning environments in JAX"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["reinforcement-learning", "python", "jax"]
+classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Science/Research",
@@ -27,22 +27,22 @@ classifiers=[
 ]
 
 [tool.setuptools.packages.find]
-include=["jumanji*"]
+include = ["jumanji*"]
 
 [tool.setuptools.package-data]
 "jumanji" = ["py.typed"]
 
 [tool.setuptools.dynamic]
-version={attr="jumanji.version.__version__"}
-dependencies={file="requirements/requirements.txt"}
-optional-dependencies.dev={file=["requirements/requirements-dev.txt"]}
-optional-dependencies.train={file=["requirements/requirements-train.txt"]}
+version = { attr = "jumanji.version.__version__" }
+dependencies = { file = "requirements/requirements.txt" }
+optional-dependencies.dev = { file = ["requirements/requirements-dev.txt"] }
+optional-dependencies.train = { file = ["requirements/requirements-train.txt"] }
 
 
 [project.urls]
-"Homepage"="https://github.com/instadeep/jumanji"
-"Bug Tracker"="https://github.com/instadeep/jumanji/issues"
-"Documentation"="https://instadeepai.github.io/jumanji"
+"Homepage" = "https://github.com/instadeep/jumanji"
+"Bug Tracker" = "https://github.com/instadeep/jumanji/issues"
+"Documentation" = "https://instadeepai.github.io/jumanji"
 
 [tool.mypy]
 python_version = "3.10"
@@ -93,3 +93,10 @@ ignore_missing_imports = true
 
 [tool.isort]
 profile = "black"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.uv]
+dev-dependencies = []
