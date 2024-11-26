@@ -19,8 +19,7 @@ from jax import numpy as jnp
 from jumanji.environments.routing.mandl.env import Mandl
 from jumanji.environments.routing.mandl.types import (
     DirectPath,
-    Network,
-    Routes,
+    NetworkData,
     TransferPath,
 )
 
@@ -70,32 +69,25 @@ class TestMandl:
 class TestGetRouteShortestPaths:
     def test_single_edge_route(self) -> None:
         """Test shortest path calculation for a route with a single edge."""
-        network = Network(
-            n_stops=3, weights=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]])
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+            links=jnp.array([[0, 2, jnp.inf], [2, 0, jnp.inf], [jnp.inf, jnp.inf, 0]]),
+            demand=jnp.zeros((3, 3)),
+            terminals=jnp.array([False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=1,
-            route_edges=jnp.array(
-                [
-                    [
-                        [0, 1, 0],  # Only edge is between stops 0 and 1
-                        [1, 0, 0],
-                        [0, 0, 0],
-                    ]
-                ]
-            ),
-        )
+        route = jnp.array([[0, 1, 0], [1, 0, 0], [0, 0, 0]])
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, routes, route_idx=0)
+        shortest_paths = Mandl._get_route_shortest_paths(network, route)
 
         expected_paths = jnp.array([[0, 2, jnp.inf], [2, 0, jnp.inf], [jnp.inf, jnp.inf, 0]])
         assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
 
     def test_linear_route(self) -> None:
         """Test shortest path calculation for a linear route (stops connected in sequence)."""
-        network = Network(
-            n_stops=4,
-            weights=jnp.array(
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
+            links=jnp.array(
                 [
                     [0, 2, jnp.inf, jnp.inf],
                     [2, 0, 3, jnp.inf],
@@ -103,63 +95,40 @@ class TestGetRouteShortestPaths:
                     [jnp.inf, jnp.inf, 1, 0],
                 ]
             ),
+            demand=jnp.zeros((4, 4)),
+            terminals=jnp.array([False, False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=1,
-            route_edges=jnp.array(
-                [
-                    [
-                        [0, 1, 0, 0],  # Linear path: 0 -> 1 -> 2 -> 3
-                        [1, 0, 1, 0],
-                        [0, 1, 0, 1],
-                        [0, 0, 1, 0],
-                    ]
-                ]
-            ),
-        )
+        route = jnp.array([[0, 1, 0, 0], [1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0]])
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, routes, route_idx=0)
+        shortest_paths = Mandl._get_route_shortest_paths(network, route)
 
         expected_paths = jnp.array([[0, 2, 5, 6], [2, 0, 3, 4], [5, 3, 0, 1], [6, 4, 1, 0]])
         assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
 
     def test_circular_route(self) -> None:
         """Test shortest path calculation for a circular route."""
-        network = Network(
-            n_stops=4,
-            weights=jnp.array(
-                [
-                    [0, 2, jnp.inf, 3],
-                    [2, 0, 2, jnp.inf],
-                    [jnp.inf, 2, 0, 2],
-                    [3, jnp.inf, 2, 0],
-                ]
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
+            links=jnp.array(
+                [[0, 2, jnp.inf, 3], [2, 0, 2, jnp.inf], [jnp.inf, 2, 0, 2], [3, jnp.inf, 2, 0]]
             ),
+            demand=jnp.zeros((4, 4)),
+            terminals=jnp.array([False, False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=1,
-            route_edges=jnp.array(
-                [
-                    [
-                        [0, 1, 0, 1],  # Circular route: 0 -> 1 -> 2 -> 3 -> 0
-                        [1, 0, 1, 0],
-                        [0, 1, 0, 1],
-                        [1, 0, 1, 0],
-                    ]
-                ]
-            ),
-        )
+        route = jnp.array([[0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]])
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, routes, route_idx=0)
+        shortest_paths = Mandl._get_route_shortest_paths(network, route)
 
         expected_paths = jnp.array([[0, 2, 4, 3], [2, 0, 2, 4], [4, 2, 0, 2], [3, 4, 2, 0]])
         assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
 
     def test_disconnected_route(self) -> None:
         """Test shortest path calculation for a route with disconnected segments."""
-        network = Network(
-            n_stops=4,
-            weights=jnp.array(
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
+            links=jnp.array(
                 [
                     [0, 2, jnp.inf, jnp.inf],
                     [2, 0, jnp.inf, jnp.inf],
@@ -167,22 +136,13 @@ class TestGetRouteShortestPaths:
                     [jnp.inf, jnp.inf, 1, 0],
                 ]
             ),
+            demand=jnp.zeros((4, 4)),
+            terminals=jnp.array([False, False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=1,
-            route_edges=jnp.array(
-                [
-                    [
-                        [0, 1, 0, 0],  # Two disconnected segments: 0-1 and 2-3
-                        [1, 0, 0, 0],
-                        [0, 0, 0, 1],
-                        [0, 0, 1, 0],
-                    ]
-                ]
-            ),
-        )
+        route = jnp.array([[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]])
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, routes, route_idx=0)
+        shortest_paths = Mandl._get_route_shortest_paths(network, route)
 
         expected_paths = jnp.array(
             [
@@ -196,23 +156,16 @@ class TestGetRouteShortestPaths:
 
     def test_empty_route(self) -> None:
         """Test shortest path calculation for an empty route (no edges)."""
-        network = Network(
-            n_stops=3, weights=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]])
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+            links=jnp.array([[0, 2, jnp.inf], [2, 0, jnp.inf], [jnp.inf, jnp.inf, 0]]),
+            demand=jnp.zeros((3, 3)),
+            terminals=jnp.array([False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=1,
-            route_edges=jnp.array(
-                [
-                    [
-                        [0, 0, 0],  # No edges
-                        [0, 0, 0],
-                        [0, 0, 0],
-                    ]
-                ]
-            ),
-        )
+        route = jnp.array([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, routes, route_idx=0)
+        shortest_paths = Mandl._get_route_shortest_paths(network, route)
 
         expected_paths = jnp.array(
             [[0, jnp.inf, jnp.inf], [jnp.inf, 0, jnp.inf], [jnp.inf, jnp.inf, 0]]
@@ -221,25 +174,16 @@ class TestGetRouteShortestPaths:
 
     def test_multiple_paths_between_stops(self) -> None:
         """Test that the shortest path is chosen when multiple paths exist between stops."""
-        network = Network(
-            n_stops=4,
-            weights=jnp.array([[0, 2, 5, jnp.inf], [2, 0, 1, 4], [5, 1, 0, 2], [jnp.inf, 4, 2, 0]]),
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
+            links=jnp.array([[0, 2, 5, jnp.inf], [2, 0, 1, 4], [5, 1, 0, 2], [jnp.inf, 4, 2, 0]]),
+            demand=jnp.zeros((4, 4)),
+            terminals=jnp.array([False, False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=1,
-            route_edges=jnp.array(
-                [
-                    [
-                        [0, 1, 1, 0],  # Multiple paths from 0 to 2: direct and via 1
-                        [1, 0, 1, 1],
-                        [1, 1, 0, 1],
-                        [0, 1, 1, 0],
-                    ]
-                ]
-            ),
-        )
+        route = jnp.array([[0, 1, 1, 0], [1, 0, 1, 1], [1, 1, 0, 1], [0, 1, 1, 0]])
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, routes, route_idx=0)
+        shortest_paths = Mandl._get_route_shortest_paths(network, route)
 
         # Verify optimal path lengths between various stops
         assert float(shortest_paths[0, 2]) == 3.0  # 0->1->2 is shorter than 0->2
@@ -249,28 +193,25 @@ class TestGetRouteShortestPaths:
 
     def test_asymmetric_weights(self) -> None:
         """Test shortest path calculation with asymmetric weights between stops."""
-        network = Network(
-            n_stops=3,
-            weights=jnp.array(
-                [
-                    [0, 2, jnp.inf],
-                    [3, 0, 1],  # Note: weight 2 one way, 3 the other
-                    [jnp.inf, 2, 0],
-                ]
-            ),
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+            links=jnp.array([[0, 2, jnp.inf], [3, 0, 1], [jnp.inf, 2, 0]]),
+            demand=jnp.zeros((3, 3)),
+            terminals=jnp.array([False, False, False]),
+            icon_path="",
         )
-        routes = Routes(n_routes=1, route_edges=jnp.array([[[0, 1, 0], [1, 0, 1], [0, 1, 0]]]))
+        route = jnp.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, routes, route_idx=0)
+        shortest_paths = Mandl._get_route_shortest_paths(network, route)
 
         expected_paths = jnp.array([[0, 2, 3], [3, 0, 1], [5, 2, 0]])
         assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
 
     def test_zero_weight_edges(self) -> None:
         """Test shortest path calculation with zero-weight edges."""
-        network = Network(
-            n_stops=4,
-            weights=jnp.array(
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
+            links=jnp.array(
                 [
                     [0, 0, jnp.inf, jnp.inf],
                     [0, 0, 0, jnp.inf],
@@ -278,36 +219,29 @@ class TestGetRouteShortestPaths:
                     [jnp.inf, jnp.inf, 0, 0],
                 ]
             ),
+            demand=jnp.zeros((4, 4)),
+            terminals=jnp.array([False, False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=1,
-            route_edges=jnp.array([[[0, 1, 0, 0], [1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0]]]),
-        )
+        route = jnp.array([[0, 1, 0, 0], [1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0]])
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, routes, route_idx=0)
+        shortest_paths = Mandl._get_route_shortest_paths(network, route)
 
         expected_paths = jnp.array([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]])
         assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
 
     def test_self_loops(self) -> None:
         """Test shortest path calculation with self-loops in the route."""
-        network = Network(
-            n_stops=3, weights=jnp.array([[1, 2, jnp.inf], [2, 1, 3], [jnp.inf, 3, 1]])
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+            links=jnp.array([[1, 2, jnp.inf], [2, 1, 3], [jnp.inf, 3, 0]]),
+            demand=jnp.zeros((3, 3)),
+            terminals=jnp.array([False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=1,
-            route_edges=jnp.array(
-                [
-                    [
-                        [1, 1, 0],  # Self-loops at stops 0 and 1
-                        [1, 1, 1],
-                        [0, 1, 1],
-                    ]
-                ]
-            ),
-        )
+        route = jnp.array([[1, 1, 0], [1, 1, 1], [0, 1, 1]])
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, routes, route_idx=0)
+        shortest_paths = Mandl._get_route_shortest_paths(network, route)
 
         # Verify self-loops don't affect shortest paths
         assert float(shortest_paths[0, 1]) == 2.0
@@ -529,14 +463,18 @@ class TestFindTransferPaths:
 class TestFindPaths:
     def test_direct_path_exists(self, mandl_env: Mandl) -> None:
         """Test that when a direct path exists, it is found and preferred over transfer paths."""
-        network = Network(
-            n_stops=3, weights=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]])
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+            links=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]]),
+            demand=jnp.zeros((3, 3)),
+            terminals=jnp.array([False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=2,
-            route_edges=jnp.array(
-                [[[0, 1, 0], [1, 0, 1], [0, 1, 0]], [[0, 0, 0], [0, 0, 1], [0, 1, 0]]]
-            ),
+        routes = jnp.array(
+            [
+                [[0, 1, 0], [1, 0, 1], [0, 1, 0]],
+                [[0, 0, 0], [0, 0, 1], [0, 1, 0]],
+            ]
         )
 
         direct_paths, transfer_paths = mandl_env._find_paths(
@@ -549,14 +487,18 @@ class TestFindPaths:
 
     def test_only_transfer_path_exists(self, mandl_env: Mandl) -> None:
         """Test that when only a transfer path exists, it is found correctly."""
-        network = Network(
-            n_stops=3, weights=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]])
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+            links=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]]),
+            demand=jnp.zeros((3, 3)),
+            terminals=jnp.array([False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=2,
-            route_edges=jnp.array(
-                [[[0, 1, 0], [1, 0, 0], [0, 0, 0]], [[0, 0, 0], [0, 0, 1], [0, 1, 0]]]
-            ),
+        routes = jnp.array(
+            [
+                [[0, 1, 0], [1, 0, 0], [0, 0, 0]],
+                [[0, 0, 0], [0, 0, 1], [0, 1, 0]],
+            ]
         )
 
         direct_paths, transfer_paths = mandl_env._find_paths(
@@ -576,13 +518,14 @@ class TestFindPaths:
 
     def test_no_paths_exist(self, mandl_env: Mandl) -> None:
         """Test that when no paths exist (direct or transfer), empty lists are returned."""
-        network = Network(
-            n_stops=3,
-            weights=jnp.array(
-                [[0, jnp.inf, jnp.inf], [jnp.inf, 0, jnp.inf], [jnp.inf, jnp.inf, 0]]
-            ),
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+            links=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]]),
+            demand=jnp.zeros((3, 3)),
+            terminals=jnp.array([False, False, False]),
+            icon_path="",
         )
-        routes = Routes(n_routes=1, route_edges=jnp.array([[[0, 0, 0], [0, 0, 0], [0, 0, 0]]]))
+        routes = jnp.array([[[0, 0, 0], [0, 0, 0], [0, 0, 0]]])
 
         direct_paths, transfer_paths = mandl_env._find_paths(
             network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
@@ -593,25 +536,20 @@ class TestFindPaths:
 
     def test_direct_path_preferred_over_transfers(self, mandl_env: Mandl) -> None:
         """Test that when both direct and transfer paths exist, direct path is preferred."""
-        network = Network(
-            n_stops=4,
-            weights=jnp.array(
-                [
-                    [0, 2, jnp.inf, 5],
-                    [2, 0, 3, jnp.inf],
-                    [jnp.inf, 3, 0, 2],
-                    [5, jnp.inf, 2, 0],
-                ]
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
+            links=jnp.array(
+                [[0, 2, jnp.inf, 5], [2, 0, 3, jnp.inf], [jnp.inf, 3, 0, 2], [5, jnp.inf, 2, 0]]
             ),
+            demand=jnp.zeros((4, 4)),
+            terminals=jnp.array([False, False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=2,
-            route_edges=jnp.array(
-                [
-                    [[0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]],
-                    [[0, 1, 1, 0], [1, 0, 0, 0], [1, 0, 0, 1], [0, 0, 1, 0]],
-                ]
-            ),
+        routes = jnp.array(
+            [
+                [[0, 1, 0, 1], [1, 0, 1, 0], [0, 1, 0, 1], [1, 0, 1, 0]],
+                [[0, 1, 1, 0], [1, 0, 0, 0], [1, 0, 0, 1], [0, 0, 1, 0]],
+            ]
         )
 
         direct_paths, transfer_paths = mandl_env._find_paths(
@@ -624,14 +562,18 @@ class TestFindPaths:
 
     def test_transfer_penalty_affects_cost(self, mandl_env: Mandl) -> None:
         """Test that different transfer penalties correctly affect the total path cost."""
-        network = Network(
-            n_stops=3, weights=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]])
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+            links=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]]),
+            demand=jnp.zeros((3, 3)),
+            terminals=jnp.array([False, False, False]),
+            icon_path="",
         )
-        routes = Routes(
-            n_routes=2,
-            route_edges=jnp.array(
-                [[[0, 1, 0], [1, 0, 0], [0, 0, 0]], [[0, 0, 0], [0, 0, 1], [0, 1, 0]]]
-            ),
+        routes = jnp.array(
+            [
+                [[0, 1, 0], [1, 0, 0], [0, 0, 0]],
+                [[0, 0, 0], [0, 0, 1], [0, 1, 0]],
+            ]
         )
 
         direct_paths, transfer_paths = mandl_env._find_paths(

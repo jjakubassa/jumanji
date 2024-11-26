@@ -12,50 +12,71 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import TYPE_CHECKING, NamedTuple
-
-import chex
+from typing import TYPE_CHECKING, NamedTuple, Optional
 
 if TYPE_CHECKING:  # https://github.com/python/mypy/issues/6239
     from dataclasses import dataclass
 else:
     from chex import dataclass
 
+import chex
 import jax.numpy as jnp
+
+
+class NetworkData(NamedTuple):
+    nodes: jnp.ndarray  # shape: (n_nodes, 2) for coordinates
+    links: jnp.ndarray  # shape: (n_nodes, n_nodes) for travel times between nodes
+    demand: jnp.ndarray  # shape: (n_nodes, n_nodes) demand matrix
+    terminals: jnp.ndarray  # shape: (n_nodes,) boolean array
+    icon_path: str  # path to the bus icon image
+
+
+class Route(NamedTuple):
+    nodes: jnp.ndarray  # sequence of node indices
+    frequency: int  # trips per hour
+    capacity: int  # passengers per vehicle
+
+
+class Passenger(NamedTuple):
+    id: int
+    origin: int  # node index
+    destination: int  # node index
+    departure_time: float
+    status: int  # 0: waiting, 1: in_vehicle, 2: delivered
+
+
+class PassengerBatch(NamedTuple):
+    """Batch of passengers for vectorized operations"""
+
+    ids: jnp.ndarray
+    origins: jnp.ndarray
+    destinations: jnp.ndarray
+    departure_times: jnp.ndarray
+    statuses: jnp.ndarray
+
+
+class Vehicle(NamedTuple):
+    id: int
+    route: Route
+    current_edge: tuple[int, int]  # (start_node, end_node)
+    time_on_edge: float  # time spent on the current edge in minutes
+    passengers: jnp.ndarray  # passenger IDs
+    capacity: int
+    next_departure: float
 
 
 @dataclass
 class State:
-    """
-    key: random key used for auto-reset.
-    """
-
-    network: chex.Array
-    demand: chex.Array
-    routes: chex.Array
-    capacity: chex.Numeric  # ()
+    network: NetworkData
+    vehicles: list[Vehicle]
+    passengers: list[Passenger]
+    current_time: float
     key: chex.PRNGKey  # (2,)
+    save_path: Optional[str] = None
 
 
 class Observation(NamedTuple):
-    """ """
-
-    network: chex.Array
-    demand_original: chex.Array
-    demand_now: chex.Array
-    routes: chex.Array
-    capacity_left: chex.Array
-    action_mask: chex.Array
-
-
-class Network(NamedTuple):
-    n_stops: int
-    weights: jnp.ndarray
-
-
-class Routes(NamedTuple):
-    n_routes: int
-    route_edges: jnp.ndarray
+    something: jnp.ndarray
 
 
 class DirectPath(NamedTuple):

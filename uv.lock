@@ -416,19 +416,21 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pandas-stubs" },
+]
+
 [package.metadata]
 requires-dist = [
-    { name = "black", marker = "extra == 'dev'", specifier = "==22.3.0" },
     { name = "chex", specifier = ">=0.1.3" },
     { name = "coverage", marker = "extra == 'dev'" },
     { name = "dm-env", specifier = ">=1.5" },
     { name = "dm-haiku", marker = "extra == 'train'" },
-    { name = "flake8", marker = "extra == 'dev'" },
     { name = "flax", marker = "extra == 'train'" },
     { name = "gym", specifier = ">=0.22.0" },
     { name = "huggingface-hub" },
     { name = "hydra-core", marker = "extra == 'train'", specifier = "==1.3" },
-    { name = "isort", marker = "extra == 'dev'", specifier = "==5.11.5" },
     { name = "jax", specifier = ">=0.2.26" },
     { name = "livereload", marker = "extra == 'dev'" },
     { name = "matplotlib", specifier = "~=3.7.4" },
@@ -440,13 +442,12 @@ requires-dist = [
     { name = "mkdocs-mermaid2-plugin", marker = "extra == 'dev'", specifier = "==0.6.0" },
     { name = "mkdocstrings", marker = "extra == 'dev'", specifier = "==0.18.0" },
     { name = "mknotebooks", marker = "extra == 'dev'", specifier = "==0.7.1" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = "==0.991" },
-    { name = "nbmake", marker = "extra == 'dev'" },
+    { name = "mypy", marker = "extra == 'dev'" },
     { name = "neptune-client", marker = "extra == 'train'", specifier = "==0.16.15" },
     { name = "numpy", specifier = ">=1.19.5" },
     { name = "optax", marker = "extra == 'train'", specifier = ">=0.1.4" },
     { name = "pillow", specifier = ">=9.0.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = "==2.17.0" },
+    { name = "pre-commit", marker = "extra == 'dev'" },
     { name = "promise", marker = "extra == 'dev'" },
     { name = "pymdown-extensions", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==7.0.1" },
@@ -461,6 +462,9 @@ requires-dist = [
     { name = "tqdm", marker = "extra == 'train'", specifier = ">=4.64.1" },
     { name = "typing-extensions", specifier = ">=4.0.0" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pandas-stubs", specifier = ">=2.2.3.241009" }]
 
 [[package]]
 name = "kiwisolver"
@@ -690,6 +694,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pandas-stubs"
+version = "2.2.3.241009"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "types-pytz" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d4/30/1ca31098512cdcfbc6ce366072848dff497880d4285281606b5895244bbc/pandas_stubs-2.2.3.241009.tar.gz", hash = "sha256:d4ab618253f0acf78a5d0d2bfd6dffdd92d91a56a69bdc8144e5a5c6d25be3b5", size = 103801 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/be/d9ba3109c4c19a78e125f63074c4e436e447f30ece15f0ef1865e7178233/pandas_stubs-2.2.3.241009-py3-none-any.whl", hash = "sha256:3a6f8f142105a42550be677ba741ba532621f4e0acad2155c0e7b2450f114cfa", size = 157883 },
+]
+
+[[package]]
 name = "pillow"
 version = "11.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -916,6 +933,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e9/34/bef135b27fe1864993a5284ad001157ee9b5538e859ac90f5b0e8cc8c9ec/tqdm-4.66.6.tar.gz", hash = "sha256:4bdd694238bef1485ce839d67967ab50af8f9272aab687c0d7702a01da0be090", size = 169533 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/73/02342de9c2d20922115f787e101527b831c0cffd2105c946c4a4826bcfd4/tqdm-4.66.6-py3-none-any.whl", hash = "sha256:223e8b5359c2efc4b30555531f09e9f2f3589bcd7fdd389271191031b49b7a63", size = 78326 },
+]
+
+[[package]]
+name = "types-pytz"
+version = "2024.2.0.20241003"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/d0/73aa3063a9ef9881bd7103cb4ae379bfd8fafda0e86b01b694d676313a4b/types-pytz-2024.2.0.20241003.tar.gz", hash = "sha256:575dc38f385a922a212bac00a7d6d2e16e141132a3c955078f4a4fd13ed6cb44", size = 5474 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/86/60/2a2977ce0f91255bbb668350b127a801a06ad37c326a2e5bfd52f03e0784/types_pytz-2024.2.0.20241003-py3-none-any.whl", hash = "sha256:3e22df1336c0c6ad1d29163c8fda82736909eb977281cb823c57f8bae07118b7", size = 5245 },
 ]
 
 [[package]]

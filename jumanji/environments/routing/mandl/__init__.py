@@ -15,11 +15,11 @@
 from jumanji.environments.routing.mandl.env import Mandl
 from jumanji.environments.routing.mandl.types import (
     DirectPath,
-    Network,
+    NetworkData,
     Observation,
-    Routes,
+    Route,
     State,
     TransferPath,
 )
 
-__all__ = ["Observation", "State", "Network", "Routes", "DirectPath", "TransferPath"]
+__all__ = ["Observation", "State", "NetworkData", "Route", "DirectPath", "TransferPath"]

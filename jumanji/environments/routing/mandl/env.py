@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import replace
 from functools import cached_property
 from typing import Final, Optional, Sequence
 
@@ -19,123 +20,95 @@ import chex
 import jax
 import jax.numpy as jnp
 import matplotlib
+import pandas as pd
+from jax import random
 
 from jumanji import specs
 from jumanji.env import Environment
 from jumanji.environments.routing.mandl.types import (
     DirectPath,
-    Network,
+    NetworkData,
     Observation,
-    Routes,
+    Passenger,
     State,
     TransferPath,
+    Vehicle,
 )
+from jumanji.environments.routing.mandl.viewer import MandlViewer
 from jumanji.types import TimeStep, restart
+from jumanji.viewer import Viewer
 
 
 class Mandl(Environment[State, specs.DiscreteArray, Observation]):
-    def __init__(self, max_capacity: int = 40) -> None:
-        self.max_capacity = max_capacity
+    def __init__(
+        self,
+        viewer: Optional[Viewer] = None,
+        max_capacity: int = 40,
+        simulation_peridod: float = 60.0,
+    ) -> None:
+        self.max_capacity: Final = max_capacity
+        self.simulation_peridod: Final = simulation_peridod
         self.num_nodes: Final = 15
         self.max_num_routes: Final = 99
         self.max_demand: Final = 1024
         self.max_edge_weight: Final = 10
+        self._viewer = viewer or MandlViewer(
+            name="Mandl",
+            render_mode="human",
+        )
         super().__init__()
 
     def __repr__(self) -> str:
         raise NotImplementedError
 
     def reset(self, key: chex.PRNGKey) -> tuple[State, TimeStep[Observation]]:
+        network_data = self._load_network()
+        passengers = self._generate_passengers(key, network_data.demand, self.simulation_peridod)
         state = State(
-            # fmt: off
-            demand=jnp.array(
-                [
-                    #   1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
-                    [0, 400, 200, 60, 80, 150, 75, 75, 30, 160, 30, 25, 35, 0, 0],  # 1
-                    [400, 0, 50, 120, 20, 180, 90, 90, 15, 130, 20, 10, 10, 5, 0],  # 2
-                    [200, 50, 0, 40, 60, 180, 90, 90, 15, 45, 20, 10, 10, 5, 0],  # 3
-                    [60, 120, 40, 0, 50, 100, 50, 50, 15, 240, 40, 25, 10, 5, 0],  # 4
-                    [80, 20, 60, 50, 0, 50, 25, 25, 10, 120, 20, 15, 5, 0, 0],  # 5
-                    [
-                        150,
-                        180,
-                        180,
-                        100,
-                        50,
-                        0,
-                        100,
-                        100,
-                        30,
-                        880,
-                        60,
-                        15,
-                        15,
-                        10,
-                        0,
-                    ],  # 6
-                    [75, 90, 90, 50, 25, 100, 0, 50, 15, 440, 35, 10, 10, 5, 0],  # 7
-                    [75, 90, 90, 50, 25, 100, 50, 0, 15, 440, 35, 10, 10, 5, 0],  # 8
-                    [30, 15, 15, 15, 10, 30, 15, 15, 0, 140, 20, 5, 0, 0, 0],  # 9
-                    [
-                        160,
-                        130,
-                        45,
-                        240,
-                        120,
-                        880,
-                        440,
-                        440,
-                        140,
-                        0,
-                        600,
-                        250,
-                        500,
-                        200,
-                        0,
-                    ],  # 10
-                    [30, 20, 20, 40, 20, 60, 35, 35, 20, 600, 0, 75, 95, 15, 0],  # 11
-                    [25, 10, 10, 25, 15, 15, 10, 10, 5, 250, 75, 0, 70, 0, 0],  # 12
-                    [35, 10, 10, 10, 5, 15, 10, 10, 0, 500, 95, 70, 0, 45, 0],  # 13
-                    [0, 5, 5, 5, 0, 10, 5, 5, 0, 200, 15, 0, 45, 0, 0],  # 14
-                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # 15
-                ],
-                dtype=jnp.int32,
-            ),
-            # fmt: on
-            # fmt: off
-            network=jnp.array(  # not verified yet
-                [
-                    # 1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
-                    [0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # 1
-                    [8, 0, 2, 3, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # 2
-                    [0, 2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # 3
-                    [0, 3, 0, 0, 4, 4, 0, 0, 0, 0, 0, 10, 0, 0, 0],  # 4
-                    [0, 6, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # 5
-                    [0, 0, 3, 4, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 3],  # 6
-                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 2],  # 7
-                    [0, 0, 0, 0, 0, 2, 0, 0, 0, 8, 0, 0, 0, 0, 2],  # 8
-                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8],  # 9
-                    [0, 0, 0, 0, 0, 0, 7, 8, 0, 0, 5, 0, 10, 8, 0],  # 10
-                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 10, 5, 0, 0],  # 11
-                    [0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0],  # 12
-                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 5, 0, 0, 2, 0],  # 13
-                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 2, 0, 0],  # 14
-                    [0, 0, 0, 0, 0, 3, 2, 2, 8, 0, 0, 0, 0, 0, 0],  # 15
-                ],
-                dtype=jnp.int32,
-            ),
-            # fmt: on
-            routes=jnp.full((self.max_num_routes, 2), -1, dtype=jnp.int32),
-            capacity=jnp.full((self.max_num_routes,), self.max_capacity, dtype=jnp.int32),
+            network=network_data,
+            vehicles=[],
+            passengers=passengers,
+            current_time=0.0,
+            save_path=None,
             key=key,
         )
-
         timestep = restart(observation=self._state_to_observation(state))
-
         return state, timestep
 
     def step(self, state: State, action: chex.Numeric) -> tuple[State, TimeStep[Observation]]:
-        raise NotImplementedError
+        # Update vehicle positions
+        new_vehicles = []
+        for vehicle in state.vehicles:
+            new_vehicle = self._move_vehicle(vehicle, state.network.links)
+            new_vehicles.append(new_vehicle)
+        state = replace(state, vehicles=new_vehicles, current_time=state.current_time + 1)
+        timestep = restart(observation=self._state_to_observation(state))
+        return state, timestep
+
+    def _move_vehicle(self, vehicle: Vehicle, travel_times: jnp.ndarray) -> Vehicle:
+        """Move the vehicle along its route based on the time spent on the current edge."""
+        time_on_edge = vehicle.time_on_edge + 1  # Increment time on edge by 1 minute
+        start_node, end_node = vehicle.current_edge
+        total_time = travel_times[start_node, end_node]
+
+        print(
+            f"Vehicle {vehicle.id} moving from {start_node} to {end_node}"
+            f"with time on edge {time_on_edge}/{total_time}"
+        )
+
+        if time_on_edge >= total_time:
+            print(f"Vehicle {vehicle.id} moving to next edge from {start_node} to {end_node}")
+            # Move to the next edge
+            route_nodes = vehicle.route.nodes
+            current_index = route_nodes.tolist().index(start_node)
+            next_index = (current_index + 1) % len(route_nodes)
+            new_edge = (route_nodes[next_index], route_nodes[(next_index + 1) % len(route_nodes)])
+            time_on_edge = 0  # Reset time on edge
+        else:
+            print(f"Vehicle {vehicle.id} staying on edge from {start_node} to {end_node}")
+            new_edge = vehicle.current_edge
+
+        return vehicle._replace(current_edge=new_edge, time_on_edge=time_on_edge)
 
     @cached_property
     def observation_spec(self) -> specs.Spec[Observation]:
@@ -219,7 +192,7 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         return specs.DiscreteArray(2, name="action")
 
     def render(self, state: State) -> Optional[chex.ArrayNumpy]:
-        raise NotImplementedError
+        return self._viewer.render(state)
 
     def animate(
         self,
@@ -227,7 +200,7 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         interval: int = 200,
         save_path: Optional[str] = None,
     ) -> matplotlib.animation.FuncAnimation:
-        raise NotImplementedError
+        return self._viewer.animate(states, interval, save_path)
 
     def close(self) -> None:
         raise NotImplementedError
@@ -294,8 +267,8 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
 
     def _find_paths(
         self,
-        network: Network,
-        routes: Routes,
+        network: NetworkData,
+        routes: jnp.ndarray,
         start: int,
         end: int,
         transfer_penalty: float = 2.0,
@@ -303,8 +276,8 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         """Find all valid paths between start and end, including transfers"""
         # Calculate shortest paths for each route
         route_paths = []
-        for r in range(routes.n_routes):
-            route_paths.append(self._get_route_shortest_paths(network, routes, r))
+        for r in range(routes.shape[0]):
+            route_paths.append(self._get_route_shortest_paths(network, routes[r]))
 
         # Always check direct paths first
         direct_paths = self._find_direct_paths(route_paths, start, end)
@@ -319,15 +292,14 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         return direct_paths, transfer_paths
 
     @staticmethod
-    def _get_route_shortest_paths(network: Network, routes: Routes, route_idx: int) -> jnp.ndarray:
+    def _get_route_shortest_paths(network: NetworkData, route: jnp.ndarray) -> jnp.ndarray:
         """Get shortest paths for a route by masking the network"""
-        route = routes.route_edges[route_idx]
-        dist = jnp.where(route == 1, network.weights, jnp.inf)
+        dist = jnp.where(route == 1, network.links, jnp.inf)
 
         # Set diagonal elements to 0 initially
         dist = dist.at[jnp.diag_indices_from(dist)].set(0)
 
-        # Simple Floyd-Warshall with JAX
+        # Floyd-Warshall
         n_stops = len(dist)
         for intermediate in range(n_stops):
             for start in range(n_stops):
@@ -385,3 +357,79 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
                             )
                         )
         return sorted(transfer_paths, key=lambda x: x.total_cost)
+
+    def _load_network(self, path: str = "jumanji/environments/routing/mandl") -> NetworkData:
+        """Load network data from files"""
+
+        nodes_df = pd.read_csv(f"{path}/mandl1_nodes.txt")
+        links_df = pd.read_csv(f"{path}/mandl1_links.txt")
+        demand_df = pd.read_csv(f"{path}/mandl1_demand.txt")
+        icon_path = f"{path}/bus-transportation-public-svgrepo-com.png"
+
+        # Process nodes
+        nodes = jnp.array(nodes_df[["lat", "lon"]].values)
+        terminals = jnp.array(nodes_df["terminal"].values, dtype=bool)
+
+        # Normalize coordinates
+        min_coords = nodes.min(axis=0)
+        max_coords = nodes.max(axis=0)
+        nodes = (nodes - min_coords) / (max_coords - min_coords)
+
+        # Create adjacency matrix with travel times
+        n_nodes = len(nodes_df)
+        travel_times = jnp.full((n_nodes, n_nodes), jnp.inf)
+        travel_times = travel_times.at[jnp.diag_indices_from(travel_times)].set(0)
+        for _, row in links_df.iterrows():
+            travel_times = travel_times.at[int(row["from"] - 1), int(row["to"] - 1)].set(
+                row["travel_time"]
+            )
+
+        # Process demand into matrix form
+        demand = jnp.zeros((n_nodes, n_nodes))
+        for _, row in demand_df.iterrows():
+            demand = demand.at[int(row["from"] - 1), int(row["to"] - 1)].set(row["demand"])
+
+        return NetworkData(
+            nodes=nodes, links=travel_times, demand=demand, terminals=terminals, icon_path=icon_path
+        )
+
+    def _generate_passengers(
+        self,
+        key: chex.PRNGKey,
+        demand_matrix: jnp.ndarray,
+        simulation_period: float = 60.0,  # minutes
+    ) -> list[Passenger]:
+        """Generate passengers according to demand matrix"""
+        n_nodes = demand_matrix.shape[0]
+        passengers = []
+        passenger_id = 0
+
+        # Convert hourly demand to simulation period
+        period_demand = demand_matrix * (simulation_period / 60.0)
+
+        # For each OD pair
+        for origin in range(n_nodes):
+            for destination in range(n_nodes):
+                if origin != destination:
+                    n_passengers = int(period_demand[origin, destination])
+
+                    if n_passengers > 0:
+                        key, subkey = random.split(key)
+                        departure_times = random.uniform(
+                            subkey, shape=(n_passengers,), minval=0, maxval=simulation_period
+                        )
+
+                        for t in departure_times:
+                            passengers.append(
+                                Passenger(
+                                    id=passenger_id,
+                                    origin=origin,
+                                    destination=destination,
+                                    departure_time=float(t),
+                                    status=0,
+                                )
+                            )
+                            passenger_id += 1
+
+        passengers.sort(key=lambda p: p.departure_time)
+        return passengers

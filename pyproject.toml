@@ -99,7 +99,9 @@ venvPath = "."
 venv = ".venv"
 
 [tool.uv]
-dev-dependencies = []
+dev-dependencies = [
+    "pandas-stubs>=2.2.3.241009",
+]
 
 [tool.ruff]
 line-length = 100
