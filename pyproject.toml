@@ -101,6 +101,7 @@ venv = ".venv"
 [tool.uv]
 dev-dependencies = [
     "pandas-stubs>=2.2.3.241009",
+    "pytest-pudb>=0.7.0",
 ]
 
 [tool.ruff]

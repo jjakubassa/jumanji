@@ -17,7 +17,7 @@ from jumanji.environments.routing.mandl.types import (
     DirectPath,
     NetworkData,
     Observation,
-    Route,
+    RouteBatch,
     State,
     TransferPath,
 )

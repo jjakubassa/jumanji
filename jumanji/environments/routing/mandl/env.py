@@ -29,10 +29,11 @@ from jumanji.environments.routing.mandl.types import (
     DirectPath,
     NetworkData,
     Observation,
-    Passenger,
+    PassengerBatch,
+    RouteBatch,
     State,
     TransferPath,
-    Vehicle,
+    VehicleBatch,
 )
 from jumanji.environments.routing.mandl.viewer import MandlViewer
 from jumanji.types import TimeStep, restart
@@ -44,10 +45,10 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         self,
         viewer: Optional[Viewer] = None,
         max_capacity: int = 40,
-        simulation_peridod: float = 60.0,
+        simulation_steps: int = 60,
     ) -> None:
         self.max_capacity: Final = max_capacity
-        self.simulation_peridod: Final = simulation_peridod
+        self.simulation_steps: Final = simulation_steps
         self.num_nodes: Final = 15
         self.max_num_routes: Final = 99
         self.max_demand: Final = 1024
@@ -56,130 +57,592 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
             name="Mandl",
             render_mode="human",
         )
+        self.num_passengers: int | None = None
+        self._shortest_paths_cache: dict[int, jnp.ndarray] = {}
         super().__init__()
 
     def __repr__(self) -> str:
         raise NotImplementedError
 
     def reset(self, key: chex.PRNGKey) -> tuple[State, TimeStep[Observation]]:
-        network_data = self._load_network()
-        passengers = self._generate_passengers(key, network_data.demand, self.simulation_peridod)
+        """Reset the environment to an initial state.
+
+        Args:
+            key: Random key for initialization
+
+        Returns:
+            state: Initial state of the environment
+            timestep: Initial timestep with observation
+        """
+        # Load network and demand data
+        network_data, demand = self._load_instance_data()
+
+        # Split key for different random operations
+        key, passengers_key = random.split(key)
+
+        # Initialize empty routes
+        routes = RouteBatch(
+            ids=jnp.arange(self.max_num_routes),
+            nodes=jnp.full(
+                (self.max_num_routes, self.num_nodes), -1, dtype=int
+            ),  # All routes start empty
+            frequencies=jnp.zeros(self.max_num_routes, dtype=int),  # No vehicles assigned initially
+            on_demand=jnp.zeros(
+                self.max_num_routes, dtype=bool
+            ),  # All routes start as regular service
+        )
+
+        # Initialize vehicles
+        vehicles = self._init_vehicles(
+            num_vehicles=self.max_num_routes, max_route_length=self.num_nodes
+        )
+
+        # Initialize passengers
+        passengers = self._init_passengers(passengers_key, demand, self.simulation_steps)
+        self.num_passengers = len(passengers.ids)
+
+        # Create initial state
         state = State(
             network=network_data,
-            vehicles=[],
+            vehicles=vehicles,
+            routes=routes,
             passengers=passengers,
-            current_time=0.0,
-            save_path=None,
+            current_time=0,
             key=key,
         )
-        timestep = restart(observation=self._state_to_observation(state))
+
+        # Create initial timestep
+        timestep = restart(observation=self._state_to_observation(state, t=self.simulation_steps))
+
         return state, timestep
 
-    def step(self, state: State, action: chex.Numeric) -> tuple[State, TimeStep[Observation]]:
-        # Update vehicle positions
-        new_vehicles = []
-        for vehicle in state.vehicles:
-            new_vehicle = self._move_vehicle(vehicle, state.network.links)
-            new_vehicles.append(new_vehicle)
-        state = replace(state, vehicles=new_vehicles, current_time=state.current_time + 1)
-        timestep = restart(observation=self._state_to_observation(state))
-        return state, timestep
+    def _load_instance_data(
+        self, path: str = "jumanji/environments/routing/mandl"
+    ) -> tuple[NetworkData, jnp.ndarray]:
+        """Load network and demand data from files.
 
-    def _move_vehicle(self, vehicle: Vehicle, travel_times: jnp.ndarray) -> Vehicle:
-        """Move the vehicle along its route based on the time spent on the current edge."""
-        time_on_edge = vehicle.time_on_edge + 1  # Increment time on edge by 1 minute
-        start_node, end_node = vehicle.current_edge
-        total_time = travel_times[start_node, end_node]
+        Args:
+            path: Path to the directory containing instance data files
 
-        print(
-            f"Vehicle {vehicle.id} moving from {start_node} to {end_node}"
-            f"with time on edge {time_on_edge}/{total_time}"
+        Returns:
+            NetworkData: Contains the network structure with nodes, links, and terminals
+            demand: Matrix of shape (num_nodes, num_nodes) containing demand between nodes
+        """
+        # Load data from files
+        nodes_df = pd.read_csv(f"{path}/mandl1_nodes.txt")
+        links_df = pd.read_csv(f"{path}/mandl1_links.txt")
+        demand_df = pd.read_csv(f"{path}/mandl1_demand.txt")
+
+        # Process nodes
+        nodes = jnp.array(nodes_df[["lat", "lon"]].values)
+        terminals = jnp.array(nodes_df["terminal"].values, dtype=bool)
+
+        # Normalize node coordinates to [0, 1]
+        min_coords = nodes.min(axis=0)
+        max_coords = nodes.max(axis=0)
+        nodes = (nodes - min_coords) / (max_coords - min_coords)
+
+        # Create adjacency matrix with travel times
+        n_nodes = len(nodes_df)
+        links = jnp.full((n_nodes, n_nodes), jnp.inf)  # Initialize with inf
+        links = links.at[jnp.diag_indices_from(links)].set(0)  # Set diagonal to 0
+
+        # Fill in the travel times from the links data
+        for _, row in links_df.iterrows():
+            from_node = int(row["from"] - 1)  # Convert from 1-based to 0-based indexing
+            to_node = int(row["to"] - 1)
+            links = links.at[from_node, to_node].set(row["travel_time"])
+
+        # Process demand into matrix form
+        demand = jnp.zeros((n_nodes, n_nodes))
+        for _, row in demand_df.iterrows():
+            demand = demand.at[int(row["from"] - 1), int(row["to"] - 1)].set(row["demand"])
+
+        network_data = NetworkData(
+            nodes=nodes,  # Normalized coordinates of each node
+            links=links,  # Travel times between nodes (inf if no direct connection)
+            terminals=terminals,  # Boolean mask of terminal nodes
         )
 
-        if time_on_edge >= total_time:
-            print(f"Vehicle {vehicle.id} moving to next edge from {start_node} to {end_node}")
-            # Move to the next edge
-            route_nodes = vehicle.route.nodes
-            current_index = route_nodes.tolist().index(start_node)
-            next_index = (current_index + 1) % len(route_nodes)
-            new_edge = (route_nodes[next_index], route_nodes[(next_index + 1) % len(route_nodes)])
-            time_on_edge = 0  # Reset time on edge
-        else:
-            print(f"Vehicle {vehicle.id} staying on edge from {start_node} to {end_node}")
-            new_edge = vehicle.current_edge
+        return network_data, demand
 
-        return vehicle._replace(current_edge=new_edge, time_on_edge=time_on_edge)
+    def _init_passengers(
+        self,
+        key: chex.PRNGKey,
+        demand_matrix: jnp.ndarray,
+        simulation_period: int = 60,  # minutes
+    ) -> PassengerBatch:
+        """Generate passengers according to demand matrix.
+
+        Args:
+            key: Random key for generating departure times
+            demand_matrix: Matrix of shape (num_nodes, num_nodes) containing hourly demand
+                between nodes
+            simulation_period: Length of simulation in minutes
+
+        Returns:
+            PassengerBatch: Initial state of all passengers
+
+        Passenger status codes:
+            0: not yet in system (before departure time)
+            1: waiting for vehicle
+            2: in vehicle
+            3: completed journey
+        """
+        n_nodes = demand_matrix.shape[0]
+        origins = []
+        destinations = []
+        departure_times = []
+        passenger_id = 0
+
+        # Convert hourly demand to simulation period
+        period_demand = demand_matrix * (simulation_period / 60)
+
+        # For each OD pair
+        for origin in range(n_nodes):
+            for destination in range(n_nodes):
+                if origin != destination:
+                    n_passengers = int(period_demand[origin, destination])
+
+                    if n_passengers > 0:
+                        key, subkey = random.split(key)
+                        departure_times_batch = random.uniform(
+                            subkey, shape=(n_passengers,), minval=0, maxval=simulation_period
+                        )
+
+                        origins.extend([origin] * n_passengers)
+                        destinations.extend([destination] * n_passengers)
+                        departure_times.extend(departure_times_batch)
+                        passenger_id += n_passengers
+
+        # Convert lists to arrays
+        origins = jnp.array(origins)
+        destinations = jnp.array(destinations)
+        departure_times = jnp.array(departure_times)
+        num_passengers = len(origins)
+
+        return PassengerBatch(
+            ids=jnp.arange(num_passengers),
+            origins=origins,
+            destinations=destinations,
+            departure_times=departure_times,
+            time_waiting=jnp.zeros(num_passengers),  # Initially no waiting time
+            time_in_vehicle=jnp.zeros(num_passengers),  # Initially no in-vehicle time
+            statuses=jnp.zeros(
+                num_passengers, dtype=int
+            ),  # All passengers start as "not yet in system" (0)
+        )
+
+    def _init_vehicles(self, num_vehicles: int, max_route_length: int) -> VehicleBatch:
+        """Initialize vehicles at the start of the simulation.
+
+        Args:
+            num_vehicles: Total number of vehicles to initialize
+            max_route_length: Maximum length of a route (usually number of nodes)
+
+        Returns:
+            VehicleBatch: Initial state of all vehicles
+        """
+        return VehicleBatch(
+            ids=jnp.arange(num_vehicles),
+            route_ids=jnp.arange(num_vehicles),  # Each vehicle starts with unique route ID
+            current_edges=jnp.zeros(
+                (num_vehicles, 2), dtype=int
+            ),  # All vehicles start at edge (0,0)
+            times_on_edge=jnp.zeros(num_vehicles),  # No time spent on edges initially
+            passengers=jnp.full(
+                (num_vehicles, self.max_capacity), -1, dtype=int
+            ),  # No passengers initially (-1 represents empty seat)
+            capacities=jnp.full(
+                num_vehicles, self.max_capacity
+            ),  # All vehicles start with full capacity
+            directions=jnp.ones(num_vehicles, dtype=int),  # All vehicles start moving forward
+        )
+
+    def _state_to_observation(self, state: State, t: int) -> Observation:
+        """Convert state to observation for the agent.
+
+        Args:
+            state: Current state of the environment
+            t: Number of timesteps to look ahead for future demand
+
+        Returns:
+            Observation object containing relevant information for the agent
+        """
+        # Extract required fields from state and transform as needed
+        network_mask = state.network.links < jnp.inf  # Convert links to boolean adjacency matrix
+
+        return Observation(
+            network=network_mask,
+            travel_times=state.network.links,
+            routes=state.routes.nodes,
+            origins=state.passengers.origins,
+            destinations=state.passengers.destinations,
+            departure_times=state.passengers.departure_times,
+            time_waiting=state.passengers.time_waiting,
+            time_in_vehicle=state.passengers.time_in_vehicle,
+            statuses=state.passengers.statuses,
+            route_ids=state.vehicles.route_ids,
+            current_edges=state.vehicles.current_edges,
+            times_on_edge=state.vehicles.times_on_edge,
+            capacities=state.vehicles.capacities,
+            directions=state.vehicles.directions,
+            frequencies=state.routes.frequencies,
+            on_demand=state.routes.on_demand,
+        )
+
+    def step(self, state: State, action: chex.Numeric) -> tuple[State, TimeStep[Observation]]:
+        """Execute one environment step.
+
+        Args:
+            state: Current state of the environment
+            action: Action to take
+
+        Returns:
+            new_state: Updated state after taking action
+            timestep: New timestep with updated observation
+        """
+        self._shortest_paths_cache.clear()
+
+        # Move vehicles along their routes
+        new_vehicles = self._move_vehicles(state)
+
+        # Update passenger statuses and vehicle occupancy
+        new_state = self._update_passenger_status(replace(state, vehicles=new_vehicles))
+
+        # Try to assign waiting passengers to vehicles
+        new_state = self._assign_passengers(new_state)
+
+        # Increment time
+        new_state = replace(new_state, current_time=state.current_time + 1)
+
+        # Create timestep with new observation
+        timestep = restart(
+            observation=self._state_to_observation(new_state, t=self.simulation_steps)
+        )
+
+        return new_state, timestep
+
+    def _move_vehicles(self, state: State) -> VehicleBatch:
+        """Update vehicle positions based on their routes and current edges.
+
+        Args:
+            state: Current state of the environment
+
+        Returns:
+            Updated vehicle batch with new positions
+        """
+        new_vehicles = state.vehicles._replace()  # Create a copy to modify
+
+        # For each vehicle
+        for idx in range(len(state.vehicles.ids)):
+            current_time = state.vehicles.times_on_edge[idx]
+            current_edge = state.vehicles.current_edges[idx]
+            edge_time = state.network.links[current_edge[0], current_edge[1]]
+
+            # If vehicle has completed current edge
+            if current_time >= edge_time:
+                # Get vehicle's route
+                route = state.routes.nodes[state.vehicles.route_ids[idx]]
+                valid_nodes = route[route != -1]
+
+                if len(valid_nodes) > 0:  # Only process if route is not empty
+                    # Find next node in route
+                    current_pos = jnp.where(valid_nodes == current_edge[1])[0]
+                    if len(current_pos) > 0:  # Only process if current node is in route
+                        current_pos = current_pos[0]
+                        next_pos = current_pos + state.vehicles.directions[idx]
+
+                        if next_pos >= len(valid_nodes):
+                            # Reverse direction at end of route
+                            new_vehicles = new_vehicles._replace(
+                                directions=new_vehicles.directions.at[idx].set(-1)
+                            )
+                            next_pos = len(valid_nodes) - 2
+                        elif next_pos < 0:
+                            # Reverse direction at start of route
+                            new_vehicles = new_vehicles._replace(
+                                directions=new_vehicles.directions.at[idx].set(1)
+                            )
+                            next_pos = 1
+
+                        # Update edge
+                        next_node = valid_nodes[next_pos]
+                        new_vehicles = new_vehicles._replace(
+                            current_edges=new_vehicles.current_edges.at[idx].set(
+                                jnp.array([current_edge[1], next_node], dtype=int)
+                            ),
+                            times_on_edge=new_vehicles.times_on_edge.at[idx].set(0),
+                        )
+            else:
+                # Increment time on current edge
+                new_vehicles = new_vehicles._replace(
+                    times_on_edge=new_vehicles.times_on_edge.at[idx].set(current_time + 1)
+                )
+
+        return new_vehicles
+
+    def _update_passenger_status(self, state: State) -> State:
+        """Update passenger statuses based on current time and position.
+
+        Args:
+            state: Current state of the environment
+
+        Returns:
+            Updated state with new passenger statuses and vehicle occupancy
+        """
+        new_passengers = state.passengers
+        new_vehicles = state.vehicles
+        current_time = state.current_time
+
+        # Update statuses based on current time and conditions
+        new_statuses = new_passengers.statuses
+
+        # 1. Update not-in-system to waiting (0 -> 1) when departure time is reached
+        new_statuses = jnp.where(
+            (new_statuses == 0) & (new_passengers.departure_times <= current_time), 1, new_statuses
+        )
+
+        # 2. Update in-vehicle to completed (2 -> 3) when destination is reached
+        # and remove passengers from vehicles
+        new_vehicle_passengers = new_vehicles.passengers
+
+        for vehicle_idx, vehicle_passengers in enumerate(state.vehicles.passengers):
+            current_edge = state.vehicles.current_edges[vehicle_idx]
+            current_node = current_edge[1]  # Destination node of current edge
+
+            # Check each passenger in the vehicle
+            for seat_idx, passenger_idx in enumerate(vehicle_passengers):
+                if passenger_idx != -1:  # Skip empty seats
+                    # Check if vehicle is at passenger's destination
+                    if current_node == new_passengers.destinations[passenger_idx]:
+                        # Update passenger status to completed
+                        new_statuses = new_statuses.at[passenger_idx].set(3)
+
+                        # Remove passenger from vehicle
+                        new_vehicle_passengers = new_vehicle_passengers.at[
+                            vehicle_idx, seat_idx
+                        ].set(-1)
+
+        # Update passengers with new statuses and times
+        new_passengers = new_passengers._replace(
+            statuses=new_statuses,
+            time_waiting=jnp.where(
+                new_statuses == 1,  # Only update waiting time for waiting passengers
+                new_passengers.time_waiting + 1,
+                new_passengers.time_waiting,
+            ),
+            time_in_vehicle=jnp.where(
+                new_statuses == 2,  # Only update in-vehicle time for riding passengers
+                new_passengers.time_in_vehicle + 1,
+                new_passengers.time_in_vehicle,
+            ),
+        )
+
+        # Update vehicles with new passenger assignments
+        new_vehicles = new_vehicles._replace(passengers=new_vehicle_passengers)
+
+        return replace(state, passengers=new_passengers, vehicles=new_vehicles)
+
+    def _assign_passengers(self, state: State) -> State:
+        """Assign passengers to vehicles based on current state.
+
+        Args:
+            state: Current state of the environment
+
+        Returns:
+            Updated state with new passenger assignments
+        """
+        new_vehicles = state.vehicles
+        new_passengers = state.passengers
+
+        # Update passenger statuses based on current time
+        # Change status from 0 (not in system) to 1 (waiting) when departure time is reached
+        new_statuses = jnp.where(
+            (new_passengers.statuses == 0) & (new_passengers.departure_times <= state.current_time),
+            1,
+            new_passengers.statuses,
+        )
+        new_passengers = new_passengers._replace(statuses=new_statuses)
+
+        # For each waiting passenger (status 1), try to assign to a vehicle
+        waiting_passengers = jnp.where(new_passengers.statuses == 1)[0]
+
+        for passenger_idx in waiting_passengers:
+            origin = new_passengers.origins[passenger_idx].item()
+            destination = new_passengers.destinations[passenger_idx].item()
+
+            # Find possible paths for this passenger
+            direct_paths, transfer_paths = self._find_paths(
+                network=state.network,
+                routes=state.routes,
+                start=origin,
+                end=destination,
+                transfer_penalty=2.0,
+            )
+
+            # Try to assign to direct path first
+            assigned = False
+            for path in direct_paths:
+                # Find vehicles serving this route
+                route_vehicles = jnp.where(new_vehicles.route_ids == path.route)[0]
+
+                for vehicle_idx in route_vehicles:
+                    # Check if vehicle has capacity and is at or approaching the origin
+                    current_edge = new_vehicles.current_edges[vehicle_idx]
+                    at_origin = current_edge[0] == origin or current_edge[1] == origin
+                    has_capacity = jnp.any(new_vehicles.passengers[vehicle_idx] == -1)
+
+                    if at_origin and has_capacity:
+                        # Assign passenger to vehicle
+                        empty_seat = jnp.where(new_vehicles.passengers[vehicle_idx] == -1)[0][0]
+                        new_vehicles = new_vehicles._replace(
+                            passengers=new_vehicles.passengers.at[vehicle_idx, empty_seat].set(
+                                passenger_idx
+                            )
+                        )
+                        # Update passenger status to in-vehicle (2)
+                        new_passengers = new_passengers._replace(
+                            statuses=new_passengers.statuses.at[passenger_idx].set(2)
+                        )
+                        assigned = True
+                        break
+                if assigned:
+                    break
+
+            # TODO: Handle transfer paths if needed
+            # For now, passengers remain waiting if no direct assignment is possible
+
+        return replace(state, vehicles=new_vehicles, passengers=new_passengers)
 
     @cached_property
     def observation_spec(self) -> specs.Spec[Observation]:
         """Returns the observation spec.
 
         Returns:
-            Spec for the `Observation` whose fields are:
-            - network: BoundedArray (int) of shape (num_nodes, num_nodes).
-            - demand_original: BoundedArray (int) of shape (num_nodes, num_nodes).
-            - demand_now: BoundedArray (int) of shape (num_nodes, num_nodes).
-            - routes: BoundedArray (int) of shape (max_num_routes, 2).
-            - capacity_left: BoundedArray (int) of shape (max_num_routes,).
-            - action_mask: BoundedArray (bool) of shape (max_num_routes, num_nodes).
+            A nested `specs.Spec` matching the structure of `Observation`.
         """
-        network = specs.BoundedArray(
-            shape=(self.num_nodes, self.num_nodes),
-            minimum=0,
-            maximum=self.max_edge_weight,
-            dtype=int,
-            name="network",
-        )
-
-        demand_original = specs.BoundedArray(
-            shape=(self.num_nodes, self.num_nodes),
-            minimum=0,
-            maximum=self.max_demand,
-            dtype=int,
-            name="demand_original",
-        )
-
-        demand_now = specs.BoundedArray(
-            shape=(self.num_nodes, self.num_nodes),
-            minimum=0,
-            maximum=self.max_demand,
-            dtype=int,
-            name="demand_now",
-        )
-
-        routes = specs.BoundedArray(
-            shape=(self.max_num_routes, 2),
-            minimum=0,
-            maximum=self.num_nodes - 1,
-            dtype=int,
-            name="routes",
-        )
-
-        capacity_left = specs.BoundedArray(
-            shape=(self.max_num_routes,),
-            minimum=0,
-            maximum=self.max_capacity,
-            dtype=int,
-            name="capacity_left",
-        )
-
-        action_mask = specs.BoundedArray(
-            shape=(self.max_num_routes, self.num_nodes),
-            dtype=bool,
-            minimum=False,
-            maximum=True,
-            name="action_mask",
-        )
+        num_nodes = self.num_nodes
+        max_num_routes = self.max_num_routes
+        max_capacity = self.max_capacity
+        max_demand = self.max_demand
 
         return specs.Spec(
             Observation,
             "ObservationSpec",
-            demand_original=demand_original,
-            demand_now=demand_now,
-            network=network,
-            routes=routes,
-            capacity_left=capacity_left,
-            action_mask=action_mask,
+            network=specs.Array(
+                shape=(num_nodes, num_nodes),
+                dtype=bool,
+                name="network",
+            ),
+            travel_times=specs.BoundedArray(
+                shape=(num_nodes, num_nodes),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
+                name="travel_times",
+            ),
+            nodes=specs.Array(
+                shape=(max_num_routes, num_nodes),
+                dtype=bool,
+                name="nodes",
+            ),
+            routes=specs.BoundedArray(
+                shape=(max_num_routes, num_nodes),
+                dtype=int,
+                minimum=-1,
+                maximum=num_nodes - 1,
+                name="routes",
+            ),
+            origins=specs.BoundedArray(
+                shape=(max_demand,),
+                dtype=int,
+                minimum=0,
+                maximum=num_nodes - 1,
+                name="origins",
+            ),
+            destinations=specs.BoundedArray(
+                shape=(max_demand,),
+                dtype=int,
+                minimum=0,
+                maximum=num_nodes - 1,
+                name="destinations",
+            ),
+            departure_times=specs.BoundedArray(
+                shape=(max_demand,),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
+                name="departure_times",
+            ),
+            time_waiting=specs.BoundedArray(
+                shape=(max_demand,),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
+                name="time_waiting",
+            ),
+            time_in_vehicle=specs.BoundedArray(
+                shape=(max_demand,),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
+                name="time_in_vehicle",
+            ),
+            statuses=specs.BoundedArray(
+                shape=(max_demand,),
+                dtype=int,
+                minimum=0,
+                maximum=3,  # 0: not in system, 1: waiting, 2: in vehicle, 3: completed
+                name="statuses",
+            ),
+            route_ids=specs.BoundedArray(
+                shape=(max_num_routes,),
+                dtype=int,
+                minimum=0,
+                maximum=max_num_routes - 1,
+                name="route_ids",
+            ),
+            current_edges=specs.BoundedArray(
+                shape=(max_num_routes, 2),
+                dtype=int,
+                minimum=0,
+                maximum=num_nodes - 1,
+                name="current_edges",
+            ),
+            times_on_edge=specs.BoundedArray(
+                shape=(max_num_routes,),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
+                name="times_on_edge",
+            ),
+            capacities=specs.BoundedArray(
+                shape=(max_num_routes,),
+                dtype=int,
+                minimum=0,
+                maximum=max_capacity,
+                name="capacities",
+            ),
+            directions=specs.BoundedArray(
+                shape=(max_num_routes,),
+                dtype=int,
+                minimum=-1,
+                maximum=1,
+                name="directions",
+            ),
+            frequencies=specs.BoundedArray(
+                shape=(max_num_routes,),
+                dtype=int,
+                minimum=0,
+                maximum=max_num_routes,
+                name="frequencies",
+            ),
+            on_demand=specs.Array(
+                shape=(max_num_routes,),
+                dtype=bool,
+                name="on_demand",
+            ),
         )
 
     @cached_property
@@ -203,7 +666,9 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         return self._viewer.animate(states, interval, save_path)
 
     def close(self) -> None:
-        raise NotImplementedError
+        """Close the environment and clean up resources."""
+        if self._viewer is not None:
+            self._viewer.close()
 
     def _get_action_mask(
         self, routes: jnp.ndarray, action_space: jnp.ndarray, network: jnp.ndarray
@@ -245,191 +710,211 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         )
 
     def _get_mask_per_route(self, network: jnp.ndarray, route: jnp.ndarray) -> jnp.ndarray:
-        raise NotImplementedError
-
-    def _state_to_observation(self, state: State) -> Observation:
-        """Converts a state into an observation.
+        """Get mask for valid next nodes for a given route.
 
         Args:
-            state: `State` object containing the dynamics of the environment.
+            network: Adjacency matrix representing network connections
+            route: Current route nodes
 
         Returns:
-            observation: `Observation` object containing the observation of the environment.
+            Boolean mask where True indicates valid next nodes
         """
-        raise NotImplementedError
-
-    def _assign_passengers(self, state: State) -> None:
-        raise NotImplementedError
+        valid_nodes = route[route != -1]
+        if len(valid_nodes) == 0:
+            return jnp.zeros_like(network[0], dtype=bool)
+        current_node = valid_nodes[-1]
+        return network[current_node] > 0
 
     @staticmethod
-    def _has_no_cycle(route: jnp.ndarray) -> jnp.ndarray:
-        raise NotImplementedError
+    def _has_no_cycle(route: jnp.ndarray) -> bool:
+        """Check if a route contains no cycles.
+
+        Args:
+            route: Array of node indices representing a route
+
+        Returns:
+            Boolean indicating whether the route is cycle-free
+        """
+        valid_nodes = route[route != -1]
+        seen = set()
+        for node in valid_nodes:
+            if node in seen:
+                return False
+            seen.add(node)
+        return True
 
     def _find_paths(
         self,
         network: NetworkData,
-        routes: jnp.ndarray,
+        routes: RouteBatch,
         start: int,
         end: int,
         transfer_penalty: float = 2.0,
     ) -> tuple[list[DirectPath], list[TransferPath]]:
-        """Find all valid paths between start and end, including transfers"""
-        # Calculate shortest paths for each route
-        route_paths = []
-        for r in range(routes.shape[0]):
-            route_paths.append(self._get_route_shortest_paths(network, routes[r]))
-
         # Always check direct paths first
-        direct_paths = self._find_direct_paths(route_paths, start, end)
+        direct_paths = self._find_direct_paths(network=network, routes=routes, start=start, end=end)
 
         # Only look for transfer paths if no direct paths exist
         transfer_paths = (
             []
             if direct_paths
-            else self._find_transfer_paths(route_paths, start, end, transfer_penalty)
+            else self._find_transfer_paths(
+                network=network,
+                routes=routes,
+                start=start,
+                end=end,
+                transfer_penalty=transfer_penalty,
+            )
         )
 
         return direct_paths, transfer_paths
 
     @staticmethod
     def _get_route_shortest_paths(network: NetworkData, route: jnp.ndarray) -> jnp.ndarray:
-        """Get shortest paths for a route by masking the network"""
-        dist = jnp.where(route == 1, network.links, jnp.inf)
+        """Calculate shortest paths between all pairs of nodes for a given route."""
+        n_nodes = network.links.shape[0]
+        dist = jnp.full((n_nodes, n_nodes), jnp.inf)
 
-        # Set diagonal elements to 0 initially
-        dist = dist.at[jnp.diag_indices_from(dist)].set(0)
+        # Get valid nodes (remove padding)
+        valid_nodes = route[route != -1]
 
-        # Floyd-Warshall
-        n_stops = len(dist)
-        for intermediate in range(n_stops):
-            for start in range(n_stops):
-                for end in range(n_stops):
-                    dist_via_intermediate = dist[start, intermediate] + dist[intermediate, end]
-                    dist = dist.at[start, end].set(
-                        jnp.minimum(dist[start, end], dist_via_intermediate)
-                    )
+        if len(valid_nodes) <= 1:
+            return dist.at[jnp.diag_indices_from(dist)].set(0)
+
+        # Create a masked version of the network links
+        masked_links = jnp.full((n_nodes, n_nodes), jnp.inf)
+
+        # Set diagonal elements to 0
+        masked_links = masked_links.at[jnp.diag_indices_from(masked_links)].set(0)
+
+        # Only add links between consecutive nodes in the route
+        for i in range(len(valid_nodes) - 1):
+            from_node = valid_nodes[i]
+            to_node = valid_nodes[i + 1]
+            masked_links = masked_links.at[from_node, to_node].set(
+                network.links[from_node, to_node]
+            )
+            masked_links = masked_links.at[to_node, from_node].set(
+                network.links[to_node, from_node]
+            )
+
+        # Floyd-Warshall only for nodes in the route
+        route_nodes_set = set(valid_nodes.tolist())
+        dist = masked_links
+        for k in range(n_nodes):
+            if k not in route_nodes_set:
+                continue
+            for i in range(n_nodes):
+                if i not in route_nodes_set:
+                    continue
+                for j in range(n_nodes):
+                    if j not in route_nodes_set:
+                        continue
+                    if dist[i, k] < jnp.inf and dist[k, j] < jnp.inf:
+                        new_dist = dist[i, k] + dist[k, j]
+                        if new_dist < dist[i, j]:
+                            dist = dist.at[i, j].set(new_dist)
+
         return dist
 
-    @staticmethod
-    def _find_direct_paths(
-        route_paths: list[jnp.ndarray], start: int, end: int
-    ) -> list[DirectPath]:
-        direct_paths = []
-        for r in range(len(route_paths)):
-            cost = route_paths[r][start, end]
-            if cost < jnp.inf:
-                direct_paths.append(DirectPath(route=r, cost=float(cost), start=start, end=end))
-        return sorted(direct_paths, key=lambda x: x.cost)
+    def _get_all_shortest_paths(self, network: NetworkData, routes: RouteBatch) -> jnp.ndarray:
+        # Create a cache key from the routes
+        cache_key = hash(routes.nodes.tobytes())
 
-    @staticmethod
+        if cache_key in self._shortest_paths_cache:
+            return self._shortest_paths_cache[cache_key]
+
+        # If not in cache, compute the paths
+        num_routes = len(routes.ids)
+        route_paths = jnp.zeros((num_routes, network.links.shape[0], network.links.shape[1]))
+        for i in range(num_routes):
+            route_paths = route_paths.at[i].set(
+                self._get_route_shortest_paths(network, routes.nodes[i])
+            )
+
+        # Store in cache
+        self._shortest_paths_cache[cache_key] = route_paths
+        return route_paths
+
+    def _find_direct_paths(
+        self, network: NetworkData, routes: RouteBatch, start: int, end: int
+    ) -> list[DirectPath]:
+        """Find all direct paths between start and end nodes.
+
+        Args:
+            route_paths: List of route batches containing route definitions
+            start: Starting node index
+            end: Ending node index
+
+        Returns:
+            List of direct paths sorted by cost
+        """
+        shortest_paths_costs = self._get_all_shortest_paths(network=network, routes=routes)
+        direct_paths = []
+
+        paths_start_end = shortest_paths_costs[:, start, end]
+
+        # Check each route for possible direct paths
+        for route_idx, path_costs in enumerate(paths_start_end):
+            # If there's a valid path from start to end in this route
+            if path_costs < jnp.inf:
+                direct_paths.append(
+                    DirectPath(start=start, end=end, route=route_idx, cost=path_costs.item())
+                )
+
+        # Sort paths by cost
+        return sorted(direct_paths, key=lambda p: p.cost)
+
     def _find_transfer_paths(
-        route_paths: list[jnp.ndarray],
+        self,
+        network: NetworkData,
+        routes: RouteBatch,
         start: int,
         end: int,
         transfer_penalty: float = 2.0,
     ) -> list[TransferPath]:
+        """Find all transfer paths between start and end nodes.
+
+        Args:
+            network: Network structure containing nodes and links
+            routes: Batch of routes
+            start: Starting node index
+            end: Ending node index
+            transfer_penalty: Cost penalty for making a transfer
+
+        Returns:
+            List of transfer paths sorted by total cost
+        """
+        shortest_paths_costs = self._get_all_shortest_paths(network=network, routes=routes)
         transfer_paths = []
-        n_routes = len(route_paths)
-        n_stops = len(route_paths[0])
+        num_routes = len(routes.ids)
 
-        for r1 in range(n_routes):
-            for r2 in range(n_routes):
-                if r1 == r2:
+        # Check all possible pairs of routes for transfers
+        for first_route in range(num_routes):
+            for second_route in range(num_routes):
+                if first_route == second_route:
                     continue
-                for transfer_stop in range(n_stops):
-                    # Skip transfers at start and end nodes
-                    if transfer_stop == start or transfer_stop == end:
-                        continue
 
-                    cost1 = route_paths[r1][start, transfer_stop]
-                    cost2 = route_paths[r2][transfer_stop, end]
+                # Check each possible transfer point
+                for transfer_point in range(network.nodes.shape[0]):
+                    # Check if transfer point is reachable in both routes
+                    first_leg = shortest_paths_costs[first_route][start, transfer_point]
+                    second_leg = shortest_paths_costs[second_route][transfer_point, end]
 
-                    if cost1 < jnp.inf and cost2 < jnp.inf:
-                        total_cost = cost1 + cost2 + transfer_penalty
+                    # Check if we can get from start to transfer point on first route
+                    # and from transfer point to end on second route
+                    if (first_leg < jnp.inf) and (second_leg < jnp.inf):
+                        total_cost = first_leg + second_leg + transfer_penalty
                         transfer_paths.append(
                             TransferPath(
-                                first_route=r1,
-                                second_route=r2,
-                                total_cost=float(total_cost),
-                                transfer_stop=transfer_stop,
                                 start=start,
                                 end=end,
+                                first_route=first_route,
+                                second_route=second_route,
+                                transfer_stop=transfer_point,
+                                total_cost=float(total_cost),
                             )
                         )
-        return sorted(transfer_paths, key=lambda x: x.total_cost)
 
-    def _load_network(self, path: str = "jumanji/environments/routing/mandl") -> NetworkData:
-        """Load network data from files"""
-
-        nodes_df = pd.read_csv(f"{path}/mandl1_nodes.txt")
-        links_df = pd.read_csv(f"{path}/mandl1_links.txt")
-        demand_df = pd.read_csv(f"{path}/mandl1_demand.txt")
-        icon_path = f"{path}/bus-transportation-public-svgrepo-com.png"
-
-        # Process nodes
-        nodes = jnp.array(nodes_df[["lat", "lon"]].values)
-        terminals = jnp.array(nodes_df["terminal"].values, dtype=bool)
-
-        # Normalize coordinates
-        min_coords = nodes.min(axis=0)
-        max_coords = nodes.max(axis=0)
-        nodes = (nodes - min_coords) / (max_coords - min_coords)
-
-        # Create adjacency matrix with travel times
-        n_nodes = len(nodes_df)
-        travel_times = jnp.full((n_nodes, n_nodes), jnp.inf)
-        travel_times = travel_times.at[jnp.diag_indices_from(travel_times)].set(0)
-        for _, row in links_df.iterrows():
-            travel_times = travel_times.at[int(row["from"] - 1), int(row["to"] - 1)].set(
-                row["travel_time"]
-            )
-
-        # Process demand into matrix form
-        demand = jnp.zeros((n_nodes, n_nodes))
-        for _, row in demand_df.iterrows():
-            demand = demand.at[int(row["from"] - 1), int(row["to"] - 1)].set(row["demand"])
-
-        return NetworkData(
-            nodes=nodes, links=travel_times, demand=demand, terminals=terminals, icon_path=icon_path
-        )
-
-    def _generate_passengers(
-        self,
-        key: chex.PRNGKey,
-        demand_matrix: jnp.ndarray,
-        simulation_period: float = 60.0,  # minutes
-    ) -> list[Passenger]:
-        """Generate passengers according to demand matrix"""
-        n_nodes = demand_matrix.shape[0]
-        passengers = []
-        passenger_id = 0
-
-        # Convert hourly demand to simulation period
-        period_demand = demand_matrix * (simulation_period / 60.0)
-
-        # For each OD pair
-        for origin in range(n_nodes):
-            for destination in range(n_nodes):
-                if origin != destination:
-                    n_passengers = int(period_demand[origin, destination])
-
-                    if n_passengers > 0:
-                        key, subkey = random.split(key)
-                        departure_times = random.uniform(
-                            subkey, shape=(n_passengers,), minval=0, maxval=simulation_period
-                        )
-
-                        for t in departure_times:
-                            passengers.append(
-                                Passenger(
-                                    id=passenger_id,
-                                    origin=origin,
-                                    destination=destination,
-                                    departure_time=float(t),
-                                    status=0,
-                                )
-                            )
-                            passenger_id += 1
-
-        passengers.sort(key=lambda p: p.departure_time)
-        return passengers
+        # Sort paths by total cost
+        return sorted(transfer_paths, key=lambda p: p.total_cost)
