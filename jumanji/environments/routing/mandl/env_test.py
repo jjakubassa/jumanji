@@ -35,6 +35,7 @@ from jumanji.environments.routing.mandl.types import (
     DirectPath,
     NetworkData,
     RouteBatch,
+    State,
     TransferPath,
 )
 
@@ -44,41 +45,122 @@ def mandl_env() -> Mandl:
     return Mandl()
 
 
-class TestMandl:
-    # def test_mandl_reset(self, mandl_env: Mandl) -> None:
-    #     raise NotImplementedError
+class TestMandlEnv:
+    def test_env_initialization(self) -> None:
+        """Test environment initialization and properties."""
+        env = Mandl(num_flex_routes=2)
+        assert env.num_nodes == 15
+        assert env.num_flex_routes == 2
+        assert env.max_capacity == 40
+        assert env.simulation_steps == 60
 
-    @pytest.mark.skip()
-    def test_has_no_cycles(self) -> None:
-        test_routes_0 = jnp.array([[1, 2]])  # Not a cycle
-        test_routes_1 = jnp.array([[2, 3]])  # Not a cycle
-        test_routes_2 = jnp.array([[1, 0]])  # Not a cycle with termination
-        test_routes_3 = jnp.array([[-1, -1]])  # Empty route
-        test_routes_4 = jnp.array([[1, 2], [2, 3]])  # Two routes without cycles
-        test_routes_5 = jnp.array([[1, 2], [5, 6]])  # Two routes without cycles
-        test_routes_6 = jnp.array([[1, 2], [2, 1]])  # Cycle between two routes
-        test_routes_7 = jnp.array([[1, 2], [2, 3], [3, 1]])  # Cycle among three routes
+    def test_reset(self) -> None:
+        """Test environment reset."""
+        env = Mandl(num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+        state, timestep = env.reset(key)
 
-        # Test unjitted version
-        assert Mandl._has_no_cycle(test_routes_0)
-        assert Mandl._has_no_cycle(test_routes_1)
-        assert Mandl._has_no_cycle(test_routes_2)
-        assert Mandl._has_no_cycle(test_routes_3)
-        assert Mandl._has_no_cycle(test_routes_4)
-        assert Mandl._has_no_cycle(test_routes_5)
-        assert not Mandl._has_no_cycle(test_routes_6)
-        assert not Mandl._has_no_cycle(test_routes_7)
+        # Check state components
+        assert isinstance(state, State)
+        assert state.current_time == 0
 
-        # Test jitted version
-        jitted_has_no_cycle = jax.jit(Mandl._has_no_cycle)
-        assert jitted_has_no_cycle(test_routes_0)
-        assert jitted_has_no_cycle(test_routes_1)
-        assert jitted_has_no_cycle(test_routes_2)
-        assert jitted_has_no_cycle(test_routes_3)
-        assert jitted_has_no_cycle(test_routes_4)
-        assert jitted_has_no_cycle(test_routes_5)
-        assert not jitted_has_no_cycle(test_routes_6)
-        assert not jitted_has_no_cycle(test_routes_7)
+        # Check routes initialization
+        fixed_routes = sum(~state.routes.on_demand)  # Count non-flexible routes
+        flex_routes = sum(state.routes.on_demand)  # Count flexible routes
+        assert fixed_routes == 4  # From solution file
+        assert flex_routes == env.num_flex_routes
+
+        # Check vehicles initialization
+        total_routes = len(state.routes.ids)
+        assert len(state.vehicles.ids) == total_routes
+        assert jnp.all(state.vehicles.capacities == env.max_capacity)
+
+    def test_action_space(self) -> None:
+        """Test action space properties."""
+        env = Mandl(num_flex_routes=2)
+        assert env.action_spec.num_values == env.num_nodes + 1  # Includes wait action
+        assert env.action_spec.minimum == 0
+        assert env.action_spec.maximum == env.num_nodes
+
+    def test_step_wait_action(self) -> None:
+        """Test step function with wait action."""
+        env = Mandl(num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+        state, _ = env.reset(key)
+
+        # Create wait action for all flexible routes
+        action = jnp.full((env.num_flex_routes,), env.num_nodes)  # All wait
+
+        new_state, _ = env.step(state, action)
+
+        # Check that flexible routes haven't changed
+        flex_routes_mask = state.routes.on_demand
+        assert jnp.array_equal(
+            state.routes.nodes[flex_routes_mask], new_state.routes.nodes[flex_routes_mask]
+        )
+
+        # Check time increment
+        assert new_state.current_time == state.current_time + 1
+
+    def test_step_valid_node_action(self) -> None:
+        """Test step function with valid node addition."""
+        env = Mandl(num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+        state, _ = env.reset(key)
+
+        # Add node 0 to first flexible route
+        action = jnp.array([0, env.num_nodes])  # First route: add node 0, Second route: wait
+        new_state, _ = env.step(state, action)
+
+        # Check that first flexible route has node 0
+        flex_routes_mask = state.routes.on_demand
+        flex_route_idx = jnp.where(flex_routes_mask)[0][0]
+        assert new_state.routes.nodes[flex_route_idx][0] == 0
+
+    def test_invalid_action_shape(self) -> None:
+        """Test error handling for invalid action shape."""
+        env = Mandl(num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+        state, _ = env.reset(key)
+
+        # Wrong shape action
+        invalid_action = jnp.array([0])  # Only one action when we need two
+
+        with pytest.raises(ValueError, match=r"Action must have shape"):
+            env.step(state, invalid_action)
+
+    def test_passenger_status_updates(self) -> None:
+        """Test passenger status updates."""
+        env = Mandl(num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+        state, _ = env.reset(key)
+
+        # Get initial passenger counts by status
+        initial_waiting = sum(state.passengers.statuses == 1)
+
+        # Step with wait action
+        action = jnp.full((env.num_flex_routes,), env.num_nodes)
+        new_state, _ = env.step(state, action)
+
+        # Check that some passengers might have changed status
+        new_waiting = sum(new_state.passengers.statuses == 1)
+        assert new_waiting >= initial_waiting  # More or same number of waiting passengers
+
+    def test_vehicle_movement(self) -> None:
+        """Test vehicle movement along routes."""
+        env = Mandl(num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+        state, _ = env.reset(key)
+
+        # Record initial vehicle positions
+        initial_positions = state.vehicles.current_edges.copy()
+
+        # Step with wait action
+        action = jnp.full((env.num_flex_routes,), env.num_nodes)
+        new_state, _ = env.step(state, action)
+
+        # Check that some vehicles have moved
+        assert not jnp.array_equal(initial_positions, new_state.vehicles.current_edges)
 
 
 class TestGetRouteShortestPaths:
@@ -998,3 +1080,7 @@ class TestFindPaths:
             start=0,
             end=2,
         )
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

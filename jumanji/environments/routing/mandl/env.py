@@ -46,9 +46,11 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         viewer: Optional[Viewer] = None,
         max_capacity: int = 40,
         simulation_steps: int = 60,
+        num_flex_routes: int = 2,
     ) -> None:
         self.max_capacity: Final = max_capacity
         self.simulation_steps: Final = simulation_steps
+        self.num_flex_routes: Final = num_flex_routes
         self.num_nodes: Final = 15
         self.max_num_routes: Final = 99
         self.max_demand: Final = 1024
@@ -77,25 +79,32 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         # Load network and demand data
         network_data, demand = self._load_instance_data()
 
+        # Load fixed routes
+        fixed_routes = self._load_fixed_routes()
+        num_fixed_routes = len(fixed_routes.ids)
+
+        # Initialize flexible routes (empty initially)
+        flexible_routes = RouteBatch(
+            ids=jnp.arange(num_fixed_routes, num_fixed_routes + self.num_flex_routes),
+            nodes=jnp.full((self.num_flex_routes, self.num_nodes), -1, dtype=int),
+            frequencies=jnp.ones(self.num_flex_routes, dtype=int),
+            on_demand=jnp.ones(self.num_flex_routes, dtype=bool),
+        )
+
+        # Combine fixed and flexible routes
+        routes = RouteBatch(
+            ids=jnp.concatenate([fixed_routes.ids, flexible_routes.ids]),
+            nodes=jnp.concatenate([fixed_routes.nodes, flexible_routes.nodes]),
+            frequencies=jnp.concatenate([fixed_routes.frequencies, flexible_routes.frequencies]),
+            on_demand=jnp.concatenate([fixed_routes.on_demand, flexible_routes.on_demand]),
+        )
+
         # Split key for different random operations
         key, passengers_key = random.split(key)
 
-        # Initialize empty routes
-        routes = RouteBatch(
-            ids=jnp.arange(self.max_num_routes),
-            nodes=jnp.full(
-                (self.max_num_routes, self.num_nodes), -1, dtype=int
-            ),  # All routes start empty
-            frequencies=jnp.zeros(self.max_num_routes, dtype=int),  # No vehicles assigned initially
-            on_demand=jnp.zeros(
-                self.max_num_routes, dtype=bool
-            ),  # All routes start as regular service
-        )
-
         # Initialize vehicles
-        vehicles = self._init_vehicles(
-            num_vehicles=self.max_num_routes, max_route_length=self.num_nodes
-        )
+        total_routes = len(routes.ids)
+        vehicles = self._init_vehicles(num_vehicles=total_routes, max_route_length=self.num_nodes)
 
         # Initialize passengers
         passengers = self._init_passengers(passengers_key, demand, self.simulation_steps)
@@ -165,6 +174,47 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         )
 
         return network_data, demand
+
+    def _load_fixed_routes(
+        self, path: str = "jumanji/environments/routing/mandl/mandl1_solution.txt"
+    ) -> RouteBatch:
+        """Load fixed routes from solution file.
+
+        File format:
+        First line: Comment about max stops
+        Second line: Number of routes
+        Next N lines: Routes as node sequences separated by dashes
+        Last N lines: Frequencies for each route
+
+        Returns:
+            RouteBatch containing the fixed routes
+        """
+        with open(path, "r") as f:
+            lines = f.readlines()
+
+            # Skip comment line and read number of routes
+            num_routes = int(lines[1])
+
+            # Read routes
+            routes = []
+            for line in lines[2 : 2 + num_routes]:
+                # Convert route string to list of node indices (subtract 1 for 0-based indexing)
+                route = [int(x) - 1 for x in line.strip().split("-")]  # Note: using en dash
+                # Pad with -1 to max length
+                padded_route = route + [-1] * (self.num_nodes - len(route))
+                routes.append(padded_route)
+
+            # Read frequencies
+            frequencies = []
+            for line in lines[2 + num_routes : 2 + 2 * num_routes]:
+                frequencies.append(int(line.strip()))
+
+        return RouteBatch(
+            ids=jnp.arange(num_routes),
+            nodes=jnp.array(routes),
+            frequencies=jnp.array(frequencies),
+            on_demand=jnp.zeros(num_routes, dtype=bool),  # Fixed routes are not on-demand
+        )
 
     def _init_passengers(
         self,
@@ -291,7 +341,7 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
             on_demand=state.routes.on_demand,
         )
 
-    def step(self, state: State, action: chex.Numeric) -> tuple[State, TimeStep[Observation]]:
+    def step(self, state: State, action: chex.Array) -> tuple[State, TimeStep[Observation]]:
         """Execute one environment step.
 
         Args:
@@ -302,18 +352,21 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
             new_state: Updated state after taking action
             timestep: New timestep with updated observation
         """
+
+        # Validate action shape
+        if not isinstance(action, (jnp.ndarray, jnp.ndarray)) or action.shape != (
+            self.num_flex_routes,
+        ):
+            raise ValueError(
+                f"Action must have shape ({self.num_flex_routes},), got {action.shape}"
+            )
+
         self._shortest_paths_cache.clear()
-
-        # Move vehicles along their routes
-        new_vehicles = self._move_vehicles(state)
-
-        # Update passenger statuses and vehicle occupancy
-        new_state = self._update_passenger_status(replace(state, vehicles=new_vehicles))
-
-        # Try to assign waiting passengers to vehicles
+        new_routes = self._update_flexible_routes(state.routes, action, state.network.links)
+        new_state = replace(state, routes=new_routes)
+        new_vehicles = self._move_vehicles(new_state)
+        new_state = self._update_passenger_status(replace(new_state, vehicles=new_vehicles))
         new_state = self._assign_passengers(new_state)
-
-        # Increment time
         new_state = replace(new_state, current_time=state.current_time + 1)
 
         # Create timestep with new observation
@@ -322,6 +375,35 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
         )
 
         return new_state, timestep
+
+    def _update_flexible_routes(
+        self, routes: RouteBatch, action: jnp.ndarray, links: jnp.ndarray
+    ) -> RouteBatch:
+        """Update flexible routes based on actions."""
+        new_nodes = routes.nodes.copy()
+        flexible_mask = routes.on_demand
+
+        for flex_idx, all_idx in enumerate(jnp.where(flexible_mask)[0]):
+            if action[flex_idx] != self.num_nodes:  # If not wait action
+                route = routes.nodes[all_idx]
+                empty_pos = jnp.where(route == -1)[0][0]
+                new_node = action[flex_idx].item()
+                if self._is_valid_next_stop(route, new_node, links):
+                    new_nodes = new_nodes.at[all_idx, empty_pos].set(new_node)
+
+        return routes._replace(nodes=new_nodes)
+
+    def _is_valid_next_stop(self, route: jnp.ndarray, new_node: int, links: jnp.ndarray) -> bool:
+        """Check if new_node is a valid next stop for the route."""
+        # Get last valid node in route
+        valid_nodes = route[route != -1]
+        if len(valid_nodes) == 0:
+            return True  # Any node is valid for empty route
+
+        last_node = valid_nodes[-1]
+
+        # Check if nodes are connected in network
+        return bool((links[last_node, new_node] < jnp.inf).item())
 
     def _move_vehicles(self, state: State) -> VehicleBatch:
         """Update vehicle positions based on their routes and current edges.
@@ -647,12 +729,15 @@ class Mandl(Environment[State, specs.DiscreteArray, Observation]):
 
     @cached_property
     def action_spec(self) -> specs.DiscreteArray:
-        """Returns the action spec.
-
-        Returns:
-            action_spec: a `specs.DiscreteArray` spec.
         """
-        return specs.DiscreteArray(2, name="action")
+        Action space for each flexible route:
+        - 0 to num_nodes-1: choose that node as next stop
+        - num_nodes: wait/don't append stop
+        """
+        return specs.DiscreteArray(
+            num_values=self.num_nodes + 1,  # includes wait action
+            name="action",
+        )
 
     def render(self, state: State) -> Optional[chex.ArrayNumpy]:
         return self._viewer.render(state)
