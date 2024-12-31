@@ -117,6 +117,11 @@ register(id="CVRP-v1", entry_point="jumanji.environments:CVRP")
 # a maximum demand for each node of 10, and a dense reward function.
 register(id="MultiCVRP-v0", entry_point="jumanji.environments:MultiCVRP")
 
+register(
+    id="Mandl-v0",
+    entry_point="jumanji.environments.routing.mandl:Mandl",
+)
+
 # Maze with 10 rows and 10 columns, a time limit of 100 and a random maze generator.
 register(id="Maze-v0", entry_point="jumanji.environments:Maze")
 

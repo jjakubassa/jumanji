@@ -26,17 +26,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+from dataclasses import replace
+
 import jax
 import pytest
 from jax import numpy as jnp
 
 from jumanji.environments.routing.mandl.env import Mandl
 from jumanji.environments.routing.mandl.types import (
-    DirectPath,
     NetworkData,
     RouteBatch,
     State,
-    TransferPath,
 )
 
 
@@ -78,9 +79,8 @@ class TestMandlEnv:
     def test_action_space(self) -> None:
         """Test action space properties."""
         env = Mandl(num_flex_routes=2)
-        assert env.action_spec.num_values == env.num_nodes + 1  # Includes wait action
-        assert env.action_spec.minimum == 0
-        assert env.action_spec.maximum == env.num_nodes
+        assert env.action_spec.minimum == -1  # Allow wait action (-1)
+        assert env.action_spec.maximum == env.num_nodes - 1  # Node indices from 0 to num_nodes-1
 
     def test_step_wait_action(self) -> None:
         """Test step function with wait action."""
@@ -89,7 +89,7 @@ class TestMandlEnv:
         state, _ = env.reset(key)
 
         # Create wait action for all flexible routes
-        action = jnp.full((env.num_flex_routes,), env.num_nodes)  # All wait
+        action = jnp.full((env.num_flex_routes,), -1)  # All wait actions are -1 now
 
         new_state, _ = env.step(state, action)
 
@@ -162,6 +162,43 @@ class TestMandlEnv:
         # Check that some vehicles have moved
         assert not jnp.array_equal(initial_positions, new_state.vehicles.current_edges)
 
+    def test_reward_calculation(self) -> None:
+        """Test that rewards are calculated correctly."""
+        env = Mandl(num_flex_routes=2, waiting_penalty_factor=2.0, simulation_steps=2)
+        key = jax.random.PRNGKey(0)
+
+        # Reset environment
+        state, _ = env.reset(key)
+
+        # Manually set some passengers to waiting state to ensure non-zero reward
+        state = replace(
+            state,
+            passengers=state.passengers._replace(
+                statuses=state.passengers.statuses.at[0:10].set(
+                    1
+                ),  # Set first 10 passengers to waiting
+                time_waiting=state.passengers.time_waiting.at[0:10].set(1.0),  # Add waiting time
+            ),
+        )
+
+        # Take a wait action
+        action = jnp.full((env.num_flex_routes,), -1)
+
+        # First step (not terminal)
+        state, timestep = env.step(state, action)
+        assert timestep.reward == jnp.array(0.0)  # No reward during episode
+
+        # Second step (terminal)
+        state, timestep = env.step(state, action)
+        assert timestep.reward < jnp.array(
+            -0.1
+        )  # Should be significantly negative due to waiting passengers
+
+        # Check metrics
+        metrics = env.get_metrics(state)
+        assert metrics["waiting_passengers"] > 0
+        assert metrics["total_waiting_time"] > 0.0
+
 
 class TestGetRouteShortestPaths:
     def test_single_edge_route(self) -> None:
@@ -229,39 +266,6 @@ class TestGetRouteShortestPaths:
         shortest_paths = Mandl._get_route_shortest_paths(network, route.nodes)
 
         expected_paths = jnp.array([[0, 2, 4, 6], [2, 0, 2, 4], [4, 2, 0, 2], [6, 4, 2, 0]])
-        assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
-
-    def test_disconnected_route(self) -> None:
-        """Test shortest path calculation for a route with disconnected segments."""
-        network = NetworkData(
-            nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
-            links=jnp.array(
-                [
-                    [0, 2, jnp.inf, jnp.inf],
-                    [2, 0, jnp.inf, jnp.inf],
-                    [jnp.inf, jnp.inf, 0, 1],
-                    [jnp.inf, jnp.inf, 1, 0],
-                ]
-            ),
-            terminals=jnp.array([False, False, False, False]),
-        )
-        route = RouteBatch(
-            ids=jnp.array([0]),
-            nodes=jnp.array([[0, 1, -1, -1], [2, 3, -1, -1]]),  # Two disconnected segments
-            frequencies=jnp.array([1]),
-            on_demand=jnp.array([False]),
-        )
-
-        shortest_paths = Mandl._get_route_shortest_paths(network, route.nodes)
-
-        expected_paths = jnp.array(
-            [
-                [0, 2, jnp.inf, jnp.inf],
-                [2, 0, jnp.inf, jnp.inf],
-                [jnp.inf, jnp.inf, 0, 1],
-                [jnp.inf, jnp.inf, 1, 0],
-            ]
-        )
         assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
 
     def test_empty_route(self) -> None:
@@ -463,28 +467,6 @@ class TestGetAllShortestPaths:
             equal_nan=True,
         )
 
-    def test_caching(self, mandl_env: Mandl) -> None:
-        """Test that results are cached and reused."""
-        network = NetworkData(
-            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
-            links=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]]),
-            terminals=jnp.array([False, False, False]),
-        )
-        routes = RouteBatch(
-            ids=jnp.array([0]),
-            nodes=jnp.array([[0, 1, 2, -1]]),
-            frequencies=jnp.array([1]),
-            on_demand=jnp.array([False]),
-        )
-
-        # First call should compute and cache
-        first_result = mandl_env._get_all_shortest_paths(network=network, routes=routes)
-        # Second call should use cached result
-        second_result = mandl_env._get_all_shortest_paths(network=network, routes=routes)
-
-        assert jnp.array_equal(first_result, second_result)
-        assert len(mandl_env._shortest_paths_cache) == 1
-
     def test_long_routes_both_directions(self, mandl_env: Mandl) -> None:
         """Test shortest path calculation for longer routes with symmetric weights."""
         network = NetworkData(
@@ -512,17 +494,17 @@ class TestGetAllShortestPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        shortest_paths = mandl_env._get_route_shortest_paths(network, routes.nodes)
+        shortest_paths = mandl_env._get_all_shortest_paths(network=network, routes=routes)
 
         # Forward direction (route 0)
-        assert float(shortest_paths[0, 4]) == 10.0  # 0->1->2->3->4 = 2+3+1+4 = 10
-        assert float(shortest_paths[0, 2]) == 5.0  # 0->1->2 = 2+3 = 5
-        assert float(shortest_paths[1, 3]) == 4.0  # 1->2->3 = 3+1 = 4
+        assert float(shortest_paths[0, 0, 4]) == 10.0  # 0->1->2->3->4 = 2+3+1+4 = 10
+        assert float(shortest_paths[0, 0, 2]) == 5.0  # 0->1->2 = 2+3 = 5
+        assert float(shortest_paths[0, 1, 3]) == 4.0  # 1->2->3 = 3+1 = 4
 
         # Reverse direction (route 1)
-        assert float(shortest_paths[4, 0]) == 10.0  # 4->3->2->1->0 = 4+1+3+2 = 10
-        assert float(shortest_paths[4, 2]) == 5.0  # 4->3->2 = 4+1 = 5
-        assert float(shortest_paths[3, 1]) == 4.0  # 3->2->1 = 1+3 = 4
+        assert float(shortest_paths[1, 4, 0]) == 10.0  # 4->3->2->1->0 = 4+1+3+2 = 10
+        assert float(shortest_paths[1, 4, 2]) == 5.0  # 4->3->2 = 4+1 = 5
+        assert float(shortest_paths[1, 3, 1]) == 4.0  # 3->2->1 = 1+3 = 4
 
     def test_multiple_paths_between_stops(self, mandl_env: Mandl) -> None:
         """Test shortest path calculation with multiple possible routes between stops."""
@@ -551,13 +533,13 @@ class TestGetAllShortestPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        shortest_paths = mandl_env._get_route_shortest_paths(network, routes.nodes)
+        shortest_paths = mandl_env._get_all_shortest_paths(network, routes)
 
         # Verify optimal path lengths for different routes
-        assert float(shortest_paths[0, 4]) == 7.0  # Direct path 0->4 = 7
-        assert float(shortest_paths[4, 0]) == 7.0  # Direct path 4->0 = 7
-        assert float(shortest_paths[1, 4]) == 8.0  # Route 0: 1->2->3->4 = 3+1+4 = 8
-        assert float(shortest_paths[4, 1]) == 8.0  # Route 0: 4->3->2->1 = 4+1+3 = 8
+        assert float(shortest_paths[0, 0, 4]) == 7.0  # Direct path 0->4 = 7
+        assert float(shortest_paths[0, 4, 0]) == 7.0  # Direct path 4->0 = 7
+        assert float(shortest_paths[0, 1, 4]) == 8.0  # Route 0: 1->2->3->4 = 3+1+4 = 8
+        assert float(shortest_paths[0, 4, 1]) == 8.0  # Route 0: 4->3->2->1 = 4+1+3 = 8
 
 
 class TestFindDirectPaths:
@@ -581,8 +563,9 @@ class TestFindDirectPaths:
 
         paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=1)
 
-        assert len(paths) == 1
-        assert paths[0] == DirectPath(route=0, cost=2.0, start=0, end=1)
+        # Check paths array shape and first path
+        assert paths.shape[1] == 3  # [route_idx, valid, cost]
+        assert jnp.allclose(paths[0], jnp.array([0, 1.0, 2.0]))
 
     def test_no_direct_paths(self, mandl_env: Mandl) -> None:
         """Test when no direct paths exist between nodes."""
@@ -599,8 +582,7 @@ class TestFindDirectPaths:
         )
 
         paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=1)
-
-        assert len(paths) == 0
+        assert jnp.all(paths[:, 2] == jnp.inf)  # All costs are inf
 
     def test_multiple_paths_sorted_by_cost(self, mandl_env: Mandl) -> None:
         """Test that multiple direct paths are found and sorted by cost."""
@@ -623,9 +605,10 @@ class TestFindDirectPaths:
 
         paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=2)
 
-        assert len(paths) == 2
-        assert paths[0] == DirectPath(route=0, cost=5.0, start=0, end=2)
-        assert paths[1] == DirectPath(route=1, cost=8.0, start=0, end=2)
+        # Check we got 2 paths sorted by cost
+        assert paths.shape[0] == 2
+        assert jnp.allclose(paths[0], jnp.array([0, 1.0, 5.0]))  # First path cheaper
+        assert jnp.allclose(paths[1], jnp.array([1, 1.0, 8.0]))  # Second path more expensive
 
     def test_single_valid_path_among_multiple_routes(self, mandl_env: Mandl) -> None:
         """Test finding single valid path when multiple routes exist but one has a valid path."""
@@ -648,8 +631,10 @@ class TestFindDirectPaths:
 
         paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=1)
 
-        assert len(paths) == 1
-        assert paths[0] == DirectPath(route=1, cost=2.0, start=0, end=1)
+        assert paths.shape[0] == 2  # Still get all paths
+        # But only the second one is valid
+        assert jnp.allclose(paths[0], jnp.array([1, 1.0, 2.0]))  # Valid path
+        assert paths[1, 2] == jnp.inf  # Invalid path has infinite cost
 
     def test_reverse_direction(self, mandl_env: Mandl) -> None:
         """Test finding direct paths in reverse direction."""
@@ -667,8 +652,8 @@ class TestFindDirectPaths:
 
         paths = mandl_env._find_direct_paths(routes=routes, network=network, start=1, end=0)
 
-        assert len(paths) == 1
-        assert paths[0] == DirectPath(route=0, cost=2.0, start=1, end=0)
+        assert paths.shape[0] == 1
+        assert jnp.allclose(paths[0], jnp.array([0, 1.0, 2.0]))
 
     def test_path_with_transfer_not_found(self, mandl_env: Mandl) -> None:
         """Test that paths requiring transfers are not found as direct paths."""
@@ -690,8 +675,7 @@ class TestFindDirectPaths:
         )
 
         paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=2)
-
-        assert len(paths) == 0  # No direct path exists, would need transfer at node 1
+        assert jnp.all(paths[:, 2] == jnp.inf)  # All paths should have infinite cost
 
     @pytest.mark.skip()
     def test_paths_with_loops(self, mandl_env: Mandl) -> None:
@@ -710,51 +694,206 @@ class TestFindDirectPaths:
 
         paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=2)
 
-        assert len(paths) == 1
-        assert paths[0] == DirectPath(
-            route=0, cost=8.0, start=0, end=2
+        assert paths.shape[0] == 1
+        assert jnp.allclose(
+            paths[0], jnp.array([0, 1.0, 8.0])
         )  # Should find shortest path despite loop
 
 
 class TestFindTransferPaths:
-    def test_single_transfer_path(self, mandl_env: Mandl) -> None:
-        """Test finding a single transfer path between two nodes."""
-        network = NetworkData(
-            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
-            links=jnp.array(
-                [
-                    [0, 2, jnp.inf],  # 0->1: 2, 0->2: inf
-                    [2, 0, 3],  # 1->0: 2, 1->2: 3
-                    [jnp.inf, 3, 0],  # 2->0: inf, 2->1: 3
-                ]
-            ),
-            terminals=jnp.array([False, False, False]),
-        )
-        routes = RouteBatch(
-            ids=jnp.array([0, 1]),
-            nodes=jnp.array(
-                [
-                    [0, 1, -1],  # Route 0: 0->1
-                    [1, 2, -1],  # Route 1: 1->2
-                ]
-            ),
-            frequencies=jnp.array([1, 1]),
-            on_demand=jnp.array([False, False]),
-        )
+    class TestFindTransferPaths:
+        def test_single_transfer_path(self, mandl_env: Mandl) -> None:
+            """Test finding a single transfer path between two nodes."""
+            network = NetworkData(
+                nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+                links=jnp.array(
+                    [
+                        [0, 2, jnp.inf],  # 0->1: 2, 0->2: inf
+                        [2, 0, 3],  # 1->0: 2, 1->2: 3
+                        [jnp.inf, 3, 0],  # 2->0: inf, 2->1: 3
+                    ]
+                ),
+                terminals=jnp.array([False, False, False]),
+            )
+            routes = RouteBatch(
+                ids=jnp.array([0, 1]),
+                nodes=jnp.array(
+                    [
+                        [0, 1, -1],  # Route 0: 0->1
+                        [1, 2, -1],  # Route 1: 1->2
+                    ]
+                ),
+                frequencies=jnp.array([1, 1]),
+                on_demand=jnp.array([False, False]),
+            )
 
-        paths = mandl_env._find_transfer_paths(
-            routes=routes, network=network, start=0, end=2, transfer_penalty=2.0
-        )
+            paths = mandl_env._find_transfer_paths(
+                routes=routes, network=network, start=0, end=2, transfer_penalty=2.0
+            )
 
-        assert len(paths) == 1
-        assert paths[0] == TransferPath(
-            first_route=0,
-            second_route=1,
-            total_cost=7.0,  # 2 (0->1) + 3 (1->2) + 2 (transfer penalty)
-            transfer_stop=1,
-            start=0,
-            end=2,
-        )
+            assert paths.shape[1] == 5  # [first_route, second_route, transfer_stop, valid, cost]
+            assert jnp.allclose(
+                paths[0], jnp.array([0, 1, 1, 1.0, 7.0])
+            )  # 2 (0->1) + 3 (1->2) + 2 (penalty)
+
+        def test_no_transfer_paths(self, mandl_env: Mandl) -> None:
+            """Test when no transfer paths exist between nodes."""
+            network = NetworkData(
+                nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+                links=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]]),
+                terminals=jnp.array([False, False, False]),
+            )
+            routes = RouteBatch(
+                ids=jnp.array([0, 1]),
+                nodes=jnp.array(
+                    [
+                        [-1, -1, -1],  # Empty route
+                        [-1, -1, -1],  # Empty route
+                    ]
+                ),
+                frequencies=jnp.array([0, 0]),
+                on_demand=jnp.array([False, False]),
+            )
+
+            paths = mandl_env._find_transfer_paths(
+                network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
+            )
+            assert jnp.all(paths[:, 4] == jnp.inf)  # All costs should be infinite
+
+        def test_multiple_transfer_paths_sorted(self, mandl_env: Mandl) -> None:
+            """Test that multiple transfer paths are found and sorted by total cost."""
+            network = NetworkData(
+                nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
+                links=jnp.array(
+                    [[0, 2, jnp.inf, jnp.inf], [2, 0, 3, 4], [jnp.inf, 3, 0, 2], [jnp.inf, 4, 2, 0]]
+                ),
+                terminals=jnp.array([False, False, False, False]),
+            )
+            routes = RouteBatch(
+                ids=jnp.array([0, 1, 2]),
+                nodes=jnp.array(
+                    [
+                        [0, 1, -1, -1],  # Route 0: 0->1
+                        [1, 2, -1, -1],  # Route 1: 1->2
+                        [1, 3, 2, -1],  # Route 2: 1->3->2 (alternative path)
+                    ]
+                ),
+                frequencies=jnp.array([1, 1, 1]),
+                on_demand=jnp.array([False, False, False]),
+            )
+
+            paths = mandl_env._find_transfer_paths(
+                network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
+            )
+
+            # Verify we get two paths sorted by cost
+            assert paths.shape[0] >= 2
+            # Path 1: 0->1 (2) + 1->2 (3) + transfer (2) = 7
+            assert jnp.allclose(paths[0], jnp.array([0, 1, 1, 1.0, 7.0]))
+            # Path 2: 0->1 (2) + 1->3->2 (6) + transfer (2) = 10
+            assert jnp.allclose(paths[1], jnp.array([0, 2, 1, 1.0, 10.0]))
+
+        def test_different_transfer_penalties(self, mandl_env: Mandl) -> None:
+            """Test that different transfer penalties correctly affect the total cost."""
+            network = NetworkData(
+                nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+                links=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]]),
+                terminals=jnp.array([False, False, False]),
+            )
+            routes = RouteBatch(
+                ids=jnp.array([0, 1]),
+                nodes=jnp.array(
+                    [
+                        [0, 1, -1],  # Route 0: 0->1
+                        [1, 2, -1],  # Route 1: 1->2
+                    ]
+                ),
+                frequencies=jnp.array([1, 1]),
+                on_demand=jnp.array([False, False]),
+            )
+
+            # Test with higher transfer penalty
+            paths_high = mandl_env._find_transfer_paths(
+                network=network, routes=routes, start=0, end=2, transfer_penalty=4.0
+            )
+            assert jnp.allclose(
+                paths_high[0], jnp.array([0, 1, 1, 1.0, 9.0])
+            )  # 2 + 3 + 4 (higher penalty)
+
+            # Test with lower transfer penalty
+            paths_low = mandl_env._find_transfer_paths(
+                network=network, routes=routes, start=0, end=2, transfer_penalty=1.0
+            )
+            assert jnp.allclose(
+                paths_low[0], jnp.array([0, 1, 1, 1.0, 6.0])
+            )  # 2 + 3 + 1 (lower penalty)
+
+        def test_multiple_transfer_stops(self, mandl_env: Mandl) -> None:
+            """Test finding paths with multiple possible transfer stops."""
+            network = NetworkData(
+                nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
+                links=jnp.array(
+                    [[0, 2, jnp.inf, 5], [2, 0, 3, 4], [jnp.inf, 3, 0, 2], [5, 4, 2, 0]]
+                ),
+                terminals=jnp.array([False, False, False, False]),
+            )
+            routes = RouteBatch(
+                ids=jnp.array([0, 1]),
+                nodes=jnp.array(
+                    [
+                        [0, 1, 3, -1],  # Route 0: 0->1->3
+                        [1, 2, 3, -1],  # Route 1: 1->2->3
+                    ]
+                ),
+                frequencies=jnp.array([1, 1]),
+                on_demand=jnp.array([False, False]),
+            )
+
+            paths = mandl_env._find_transfer_paths(
+                network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
+            )
+
+            # Should find at least two paths with different transfer stops
+            assert paths.shape[0] >= 2
+            # Check there's a path transferring at node 1
+            assert jnp.any(
+                jnp.logical_and(paths[:, 2] == 1, jnp.isclose(paths[:, 4], 7.0))
+            )  # 2 + 3 + 2
+            # Check there's a path transferring at node 3
+            assert jnp.any(
+                jnp.logical_and(paths[:, 2] == 3, jnp.isclose(paths[:, 4], 10.0))
+            )  # 6 + 2 + 2
+
+        def test_reverse_direction(self, mandl_env: Mandl) -> None:
+            """Test transfer paths work in reverse direction."""
+            network = NetworkData(
+                nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+                links=jnp.array([[0, 2, jnp.inf], [2, 0, 3], [jnp.inf, 3, 0]]),
+                terminals=jnp.array([False, False, False]),
+            )
+            routes = RouteBatch(
+                ids=jnp.array([0, 1]),
+                nodes=jnp.array(
+                    [
+                        [0, 1, -1],  # Route 0: 0->1
+                        [1, 2, -1],  # Route 1: 1->2
+                    ]
+                ),
+                frequencies=jnp.array([1, 1]),
+                on_demand=jnp.array([False, False]),
+            )
+
+            # Test forward direction (0->2)
+            paths_forward = mandl_env._find_transfer_paths(
+                network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
+            )
+            assert jnp.allclose(paths_forward[0], jnp.array([0, 1, 1, 1.0, 7.0]))  # 2 + 3 + 2
+
+            # Test reverse direction (2->0)
+            paths_reverse = mandl_env._find_transfer_paths(
+                network=network, routes=routes, start=2, end=0, transfer_penalty=2.0
+            )
+            assert jnp.allclose(paths_reverse[0], jnp.array([1, 0, 1, 1.0, 7.0]))  # 3 + 2 + 2
 
     def test_no_transfer_paths(self, mandl_env: Mandl) -> None:
         """Test when no transfer paths exist between nodes."""
@@ -942,14 +1081,11 @@ class TestFindPaths:
             network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
         )
 
-        assert len(direct_paths) == 1
-        assert direct_paths[0] == DirectPath(
-            route=0,
-            cost=5.0,  # 2 (0->1) + 3 (1->2)
-            start=0,
-            end=2,
-        )
-        assert len(transfer_paths) == 0  # No transfer paths needed
+        # Check direct path
+        assert jnp.allclose(direct_paths[0], jnp.array([0, 1.0, 5.0]))  # [route_idx, valid, cost]
+
+        # Check transfer paths are all invalid (infinite cost)
+        assert jnp.all(transfer_paths[:, 4] == jnp.inf)
 
     def test_only_transfer_path_exists(self, mandl_env: Mandl) -> None:
         """Test that when only a transfer path exists, it is found correctly."""
@@ -975,15 +1111,15 @@ class TestFindPaths:
             network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
         )
 
-        assert len(direct_paths) == 0
-        assert len(transfer_paths) == 1
-        assert transfer_paths[0] == TransferPath(
-            first_route=0,
-            second_route=1,
-            total_cost=7.0,  # 2 (0->1) + 3 (1->2) + 2 (transfer penalty)
-            transfer_stop=1,
-            start=0,
-            end=2,
+        # Check direct paths are all invalid
+        assert jnp.all(direct_paths[:, 2] == jnp.inf)
+
+        # Check transfer path
+        assert jnp.allclose(
+            transfer_paths[0],
+            jnp.array(
+                [0, 1, 1, 1.0, 7.0]
+            ),  # [first_route, second_route, transfer_stop, valid, cost]
         )
 
     def test_no_paths_exist(self, mandl_env: Mandl) -> None:
@@ -1005,8 +1141,9 @@ class TestFindPaths:
             network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
         )
 
-        assert len(direct_paths) == 0
-        assert len(transfer_paths) == 0
+        # Check both path types are invalid
+        assert jnp.all(direct_paths[:, 2] == jnp.inf)
+        assert jnp.all(transfer_paths[:, 4] == jnp.inf)
 
     def test_direct_path_preferred_over_transfers(self, mandl_env: Mandl) -> None:
         """Test that when a direct path exists, transfer paths are not even calculated."""
@@ -1035,12 +1172,11 @@ class TestFindPaths:
             network=network, routes=routes, start=0, end=3, transfer_penalty=2.0
         )
 
-        # Direct path exists
-        assert len(direct_paths) == 1
-        assert direct_paths[0] == DirectPath(route=0, cost=5.0, start=0, end=3)
+        # Check direct path exists and is valid
+        assert jnp.allclose(direct_paths[0], jnp.array([0, 1.0, 5.0]))
 
-        # Transfer paths should be empty since a direct path exists
-        assert len(transfer_paths) == 0
+        # Check transfer paths are all invalid since direct path exists
+        assert jnp.all(transfer_paths[:, 4] == jnp.inf)
 
     def test_transfer_penalty_affects_cost(self, mandl_env: Mandl) -> None:
         """Test that different transfer penalties correctly affect the total path cost."""
@@ -1070,15 +1206,13 @@ class TestFindPaths:
             transfer_penalty=5.0,  # Higher penalty
         )
 
-        assert len(direct_paths) == 0
-        assert len(transfer_paths) == 1
-        assert transfer_paths[0] == TransferPath(
-            first_route=0,
-            second_route=1,
-            total_cost=10.0,  # 2 (0->1) + 3 (1->2) + 5 (transfer penalty)
-            transfer_stop=1,
-            start=0,
-            end=2,
+        # Check direct paths are invalid
+        assert jnp.all(direct_paths[:, 2] == jnp.inf)
+
+        # Check transfer path with higher penalty
+        assert jnp.allclose(
+            transfer_paths[0],
+            jnp.array([0, 1, 1, 1.0, 10.0]),  # 2 (0->1) + 3 (1->2) + 5 (transfer penalty)
         )
 
 

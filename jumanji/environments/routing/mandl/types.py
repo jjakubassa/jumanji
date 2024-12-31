@@ -22,6 +22,13 @@ else:
 import chex
 import jax.numpy as jnp
 
+DirectPaths = jnp.ndarray
+"""Array of shape (num_paths, 3) containing [route_idx, valid, cost]"""
+
+TransferPaths = jnp.ndarray
+"""Array of shape (num_paths, 5) containing [first_route, second_route, transfer_stop,
+valid, cost]"""
+
 
 class NetworkData(NamedTuple):
     """Represents the physical network structure and properties"""
@@ -177,40 +184,5 @@ class Observation(NamedTuple):
     on_demand: jnp.ndarray
     """Boolean array indicating if each route is an on-demand route. Shape: (n_routes,)"""
 
-
-class DirectPath(NamedTuple):
-    """Represents a direct path using a single route"""
-
-    route: int
-    """ID of the route used for this path"""
-
-    cost: float
-    """Total travel cost/time for this path"""
-
-    start: int
-    """Starting node ID"""
-
-    end: int
-    """Ending node ID"""
-
-
-class TransferPath(NamedTuple):
-    """Represents a path that requires transferring between two routes"""
-
-    first_route: int
-    """ID of the first route in the transfer path"""
-
-    second_route: int
-    """ID of the second route in the transfer path"""
-
-    total_cost: float
-    """Total travel cost/time including transfer"""
-
-    transfer_stop: int
-    """Node ID where the transfer occurs"""
-
-    start: int
-    """Starting node ID"""
-
-    end: int
-    """Ending node ID"""
+    current_time: int
+    """Current simulation timestep"""
