@@ -696,102 +696,85 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         network: NetworkData,
         current_time: int,
     ) -> tuple[PassengerBatch, VehicleBatch]:
-        """Assign waiting passengers to vehicles."""
-        num_passengers = len(passengers.ids)
-        num_vehicles = len(vehicles.ids)
-        num_nodes = network.links.shape[0]
-        num_routes = len(routes.ids)
+        """Assign waiting passengers to vehicles based on routes and capacity."""
+        # Pre-compute masks for valid assignments
+        waiting_mask = passengers.statuses == 1
+        capacity_mask = vehicles.passengers == -1
 
-        # Get vehicle positions and waiting passengers
+        # Get vehicle positions
         vehicle_positions = vehicles.current_edges[:, 1]
+        available_seats = jnp.sum(capacity_mask, axis=1)
 
-        # Instead of boolean indexing, we'll work with all passengers and use masks in computations
-        is_waiting = passengers.statuses == 1
+        # Compute costs matrix
+        def compute_costs(p_idx):
+            origin = passengers.origins[p_idx]
+            dest = passengers.destinations[p_idx]
+            is_waiting = waiting_mask[p_idx]
 
-        # Pre-compute path costs for all valid combinations
-        path_costs = jnp.full((num_nodes, num_nodes, num_routes), jnp.inf)
+            def compute_vehicle_cost(v_idx):
+                vehicle_pos = vehicle_positions[v_idx]
+                has_capacity = available_seats[v_idx] > 0
 
-        def compute_paths_for_origin(origin, costs):
-            def compute_paths_for_dest(dest, inner_costs):
-                def compute_path(_):
-                    direct_paths, _ = Mandl._find_paths(
-                        network=network, routes=routes, start=origin, end=dest
-                    )
-                    return inner_costs.at[origin, dest].set(direct_paths[:, 2])
-
-                def skip_path(_):
-                    return inner_costs
-
-                # Modify condition to avoid boolean indexing
-                needs_computation = (
-                    (origin != dest)
-                    & (jnp.sum(vehicle_positions == origin) > 0)
-                    & (jnp.sum((passengers.destinations * is_waiting) == dest) > 0)
+                pickup_paths, _ = Mandl._find_paths(
+                    network=network,
+                    routes=routes,
+                    start=vehicle_pos,
+                    end=origin,
                 )
-                return jax.lax.cond(needs_computation, compute_path, skip_path, None)
-
-            return jax.lax.fori_loop(0, num_nodes, compute_paths_for_dest, costs)
-
-        # Compute all needed paths
-        path_costs = jax.lax.fori_loop(0, num_nodes, compute_paths_for_origin, path_costs)
-
-        # Initialize cost matrix
-        costs = jnp.full((num_vehicles, num_passengers), jnp.inf)
-
-        def calculate_vehicle_costs(v_idx, costs):
-            pos = vehicle_positions[v_idx]
-            route_idx = vehicles.route_ids[v_idx]
-
-            def calculate_passenger_cost(p_idx, costs):
-                dest = passengers.destinations[p_idx]
-                # Use multiplication with is_waiting instead of boolean indexing
-                valid_assignment = (
-                    is_waiting[p_idx]
-                    & (vehicles.passengers[v_idx] == -1).any()
-                    & (pos == passengers.origins[p_idx])
+                delivery_paths, _ = Mandl._find_paths(
+                    network=network,
+                    routes=routes,
+                    start=origin,
+                    end=dest,
                 )
-                new_cost = jnp.where(valid_assignment, path_costs[pos, dest, route_idx], jnp.inf)
-                return costs.at[v_idx, p_idx].set(new_cost)
 
-            return jax.lax.fori_loop(0, num_passengers, calculate_passenger_cost, costs)
+                pickup_cost = jnp.min(pickup_paths[:, 2])
+                delivery_cost = jnp.min(delivery_paths[:, 2])
+                total_cost = pickup_cost + delivery_cost
 
-        # Calculate all costs
-        costs = jax.lax.fori_loop(0, num_vehicles, calculate_vehicle_costs, costs)
+                return jnp.where(is_waiting & has_capacity, total_cost, jnp.inf)
+
+            return jax.vmap(compute_vehicle_cost)(jnp.arange(len(vehicles.ids)))
+
+        costs = jax.vmap(compute_costs)(jnp.arange(len(passengers.ids)))
 
         # Find best assignments
-        best_vehicles = jnp.argmin(costs, axis=0)
-        min_costs = jnp.min(costs, axis=0)
+        best_vehicles = jnp.argmin(costs, axis=1)
+        min_costs = jnp.min(costs, axis=1)
 
-        # Update passenger statuses without boolean indexing
-        new_statuses = jnp.where(
-            (min_costs < jnp.inf) & is_waiting,
-            2,  # In vehicle
-            passengers.statuses,
-        )
+        # Process assignments using scan
+        def scan_fn(carry, x):
+            i, vehicle_idx, cost = x
+            p_state, v_state = carry
 
-        # Update vehicle assignments
-        new_vehicle_passengers = vehicles.passengers
+            def assign():
+                # Find first empty seat
+                empty_seat = jnp.argmax(v_state.passengers[vehicle_idx] == -1)
 
-        def assign_passenger(p_idx, v_p):
-            def do_assign(v_p):
-                v_idx = best_vehicles[p_idx]
-                empty_seat = jnp.argmax(v_p[v_idx] == -1)
-                return v_p.at[v_idx, empty_seat].set(p_idx)
+                # Update passenger status
+                new_p_statuses = p_state.statuses.at[i].set(2)
+                new_p_state = p_state._replace(statuses=new_p_statuses)
+
+                # Update vehicle passengers
+                new_v_passengers = v_state.passengers.at[vehicle_idx, empty_seat].set(i)
+                new_v_state = v_state._replace(passengers=new_v_passengers)
+
+                return new_p_state, new_v_state
 
             return jax.lax.cond(
-                (min_costs[p_idx] < jnp.inf) & is_waiting[p_idx], do_assign, lambda x: x, v_p
-            )
+                cost < jnp.inf, lambda _: assign(), lambda _: (p_state, v_state), None
+            ), None
 
-        # Process all passenger assignments
-        new_vehicle_passengers = jax.lax.fori_loop(
-            0, num_passengers, assign_passenger, new_vehicle_passengers
+        # Create scan input
+        indices = jnp.arange(len(passengers.ids))
+        scan_input = (indices, best_vehicles, min_costs)
+
+        # Run scan
+        (final_passengers, final_vehicles), _ = jax.lax.scan(
+            scan_fn, (passengers, vehicles), scan_input
         )
 
-        # Create updated batches
-        new_passengers = passengers._replace(statuses=new_statuses)
-        new_vehicles = vehicles._replace(passengers=new_vehicle_passengers)
-
-        return new_passengers, new_vehicles
+        return final_passengers, final_vehicles
 
     @cached_property
     def observation_spec(self) -> specs.Spec[Observation]:
@@ -1208,60 +1191,67 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         end: int,
         transfer_penalty: float = 2.0,
     ) -> TransferPaths:
+        """Find transfer paths between two nodes."""
         shortest_paths_costs = Mandl._get_all_shortest_paths(network=network, routes=routes)
         num_routes = len(routes.ids)
         num_nodes = network.links.shape[0]
 
-        # Maximum possible number of transfer paths
-        max_paths = num_routes * num_routes * num_nodes
+        # Create meshgrid of all possible combinations
+        first_routes = jnp.arange(num_routes)
+        second_routes = jnp.arange(num_routes)
+        transfer_points = jnp.arange(num_nodes)
 
-        # Initialize results array with invalid paths
-        results = jnp.stack(
-            [
-                jnp.repeat(jnp.arange(num_routes), num_routes * num_nodes),  # first route
-                jnp.tile(jnp.repeat(jnp.arange(num_routes), num_nodes), num_routes),  # second route
-                jnp.tile(jnp.arange(num_nodes), num_routes * num_routes),  # transfer stop
-                jnp.zeros(max_paths),  # validity
-                jnp.full(max_paths, jnp.inf),  # cost
-            ],
-            axis=1,
-        )
+        r1, r2, tp = jnp.meshgrid(first_routes, second_routes, transfer_points, indexing="ij")
 
-        def process_path(idx: int, res: jnp.ndarray) -> jnp.ndarray:
-            first_route = idx // (num_routes * num_nodes)
-            remainder = idx % (num_routes * num_nodes)
-            second_route = remainder // num_nodes
-            transfer_point = remainder % num_nodes
+        # Flatten all arrays
+        r1 = r1.flatten()
+        r2 = r2.flatten()
+        tp = tp.flatten()
 
-            def check_routes(r: jnp.ndarray) -> jnp.ndarray:
-                first_leg = shortest_paths_costs[first_route, start, transfer_point]
-                second_leg = shortest_paths_costs[second_route, transfer_point, end]
+        # Vectorized computation of path costs
+        def compute_path_cost(first_route, second_route, transfer_point):
+            first_leg = shortest_paths_costs[first_route, start, transfer_point]
+            second_leg = shortest_paths_costs[second_route, transfer_point, end]
 
-                def valid_transfer(r_inner: jnp.ndarray) -> jnp.ndarray:
-                    total_cost = first_leg + second_leg + transfer_penalty
-                    return r_inner.at[idx].set(
-                        jnp.array([first_route, second_route, transfer_point, 1.0, total_cost])
-                    )
+            # Check validity conditions
+            route_different = first_route != second_route
+            legs_valid = jnp.logical_and(first_leg < jnp.inf, second_leg < jnp.inf)
+            path_valid = jnp.logical_and(route_different, legs_valid)
 
-                def invalid_transfer(r_inner: jnp.ndarray) -> jnp.ndarray:
-                    return r_inner.at[idx].set(
-                        jnp.array([first_route, second_route, transfer_point, 0.0, jnp.inf])
-                    )
+            # Calculate total cost
+            total_cost = jnp.where(path_valid, first_leg + second_leg + transfer_penalty, jnp.inf)
 
-                return jax.lax.cond(
-                    (first_leg < jnp.inf) & (second_leg < jnp.inf),
-                    valid_transfer,
-                    invalid_transfer,
-                    r,
-                )
+            # Return invalid entries when path is not valid
+            return jnp.where(
+                path_valid,
+                jnp.array(
+                    [
+                        first_route.astype(float),
+                        second_route.astype(float),
+                        transfer_point.astype(float),
+                        1.0,  # valid
+                        total_cost,
+                    ]
+                ),
+                jnp.array(
+                    [
+                        jnp.inf,  # invalid route
+                        jnp.inf,  # invalid route
+                        jnp.inf,  # invalid transfer point
+                        0.0,  # invalid
+                        jnp.inf,  # infinite cost
+                    ]
+                ),
+            )
 
-            def skip_route(r: jnp.ndarray) -> jnp.ndarray:
-                return r
+        # Vectorize the computation
+        compute_path_cost_v = jax.vmap(compute_path_cost)
 
-            return jax.lax.cond(first_route != second_route, check_routes, skip_route, res)
+        # Compute all paths at once
+        results = compute_path_cost_v(r1, r2, tp)
 
-        # Process all possible combinations
-        results = jax.lax.fori_loop(0, max_paths, process_path, results)
+        # Sort by cost - valid paths will be first due to infinite costs for invalid paths
+        sorted_indices = jnp.argsort(results[:, 4])
+        sorted_results = results[sorted_indices]
 
-        # Sort by cost - valid paths (finite cost) will be first
-        return results[jnp.argsort(results[:, 4])]
+        return sorted_results
