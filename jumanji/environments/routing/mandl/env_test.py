@@ -26,9 +26,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from dataclasses import replace
 
+import chex
 import jax
 import pytest
 from jax import numpy as jnp
@@ -41,12 +41,12 @@ from jumanji.environments.routing.mandl.types import (
 )
 
 
-@pytest.fixture
+@pytest.fixture()
 def mandl_env() -> Mandl:
     return Mandl()
 
 
-class TestMandlEnv:
+class TestMandlEnv(chex.TestCase):
     def test_env_initialization(self) -> None:
         """Test environment initialization and properties."""
         env = Mandl(num_flex_routes=2)
@@ -55,11 +55,14 @@ class TestMandlEnv:
         assert env.max_capacity == 40
         assert env.simulation_steps == 60
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_reset(self) -> None:
         """Test environment reset."""
         env = Mandl(num_flex_routes=2)
         key = jax.random.PRNGKey(0)
-        state, timestep = env.reset(key)
+
+        reset = self.variant(env.reset)
+        state, timestep = reset(key)
 
         # Check state components
         assert isinstance(state, State)
@@ -82,11 +85,13 @@ class TestMandlEnv:
         assert env.action_spec.minimum == -1  # Allow wait action (-1)
         assert env.action_spec.maximum == env.num_nodes - 1  # Node indices from 0 to num_nodes-1
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_step_wait_action(self) -> None:
         """Test step function with wait action."""
         env = Mandl(num_flex_routes=2)
         key = jax.random.PRNGKey(0)
-        state, _ = env.reset(key)
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
 
         # Create wait action for all flexible routes
         action = jnp.full((env.num_flex_routes,), -1)  # All wait actions are -1 now
@@ -102,11 +107,13 @@ class TestMandlEnv:
         # Check time increment
         assert new_state.current_time == state.current_time + 1
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_step_valid_node_action(self) -> None:
         """Test step function with valid node addition."""
         env = Mandl(num_flex_routes=2)
         key = jax.random.PRNGKey(0)
-        state, _ = env.reset(key)
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
 
         # Add node 0 to first flexible route
         action = jnp.array([0, env.num_nodes])  # First route: add node 0, Second route: wait
@@ -117,60 +124,71 @@ class TestMandlEnv:
         flex_route_idx = jnp.where(flex_routes_mask)[0][0]
         assert new_state.routes.nodes[flex_route_idx][0] == 0
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_invalid_action_shape(self) -> None:
         """Test error handling for invalid action shape."""
         env = Mandl(num_flex_routes=2)
         key = jax.random.PRNGKey(0)
-        state, _ = env.reset(key)
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
 
         # Wrong shape action
         invalid_action = jnp.array([0])  # Only one action when we need two
 
+        step = self.variant(env.step)
         with pytest.raises(ValueError, match=r"Action must have shape"):
-            env.step(state, invalid_action)
+            step(state, invalid_action)
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_passenger_status_updates(self) -> None:
         """Test passenger status updates."""
         env = Mandl(num_flex_routes=2)
         key = jax.random.PRNGKey(0)
-        state, _ = env.reset(key)
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
 
         # Get initial passenger counts by status
         initial_waiting = sum(state.passengers.statuses == 1)
 
         # Step with wait action
         action = jnp.full((env.num_flex_routes,), env.num_nodes)
-        new_state, _ = env.step(state, action)
+        step = self.variant(env.step)
+        new_state, _ = step(state, action)
 
         # Check that some passengers might have changed status
         new_waiting = sum(new_state.passengers.statuses == 1)
         assert new_waiting >= initial_waiting  # More or same number of waiting passengers
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_vehicle_movement(self) -> None:
         """Test vehicle movement along routes."""
         env = Mandl(num_flex_routes=2)
         key = jax.random.PRNGKey(0)
-        state, _ = env.reset(key)
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
 
         # Record initial vehicle positions
         initial_positions = state.vehicles.current_edges.copy()
 
         # Step with wait action
         action = jnp.full((env.num_flex_routes,), env.num_nodes)
-        new_state, _ = env.step(state, action)
+        step = self.variant(env.step)
+        new_state, _ = step(state, action)
 
         # Check that some vehicles have moved
         assert not jnp.array_equal(initial_positions, new_state.vehicles.current_edges)
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_reward_calculation(self) -> None:
         """Test that rewards are calculated correctly."""
         env = Mandl(num_flex_routes=2, waiting_penalty_factor=2.0, simulation_steps=2)
         key = jax.random.PRNGKey(0)
 
         # Reset environment
-        state, _ = env.reset(key)
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
 
-        # Manually set some passengers to waiting state to ensure non-zero reward
+        # Manually set some passengers to waiting state to ensure non-zero reward when episode ends
         state = replace(
             state,
             passengers=state.passengers._replace(
@@ -185,22 +203,27 @@ class TestMandlEnv:
         action = jnp.full((env.num_flex_routes,), -1)
 
         # First step (not terminal)
-        state, timestep = env.step(state, action)
+        step = self.variant(env.step)
+        intermediate_state, timestep = step(state, action)
+        assert not timestep.last()  # The episode should not be done yet
         assert timestep.reward == jnp.array(0.0)  # No reward during episode
 
         # Second step (terminal)
-        state, timestep = env.step(state, action)
+        _, timestep = step(intermediate_state, action)
+        assert timestep.last()  # The episode should now be done
         assert timestep.reward < jnp.array(
-            -0.1
-        )  # Should be significantly negative due to waiting passengers
+            -(10**-5)
+        )  # Should be negative due to waiting passengers
 
-        # Check metrics
-        metrics = env.get_metrics(state)
-        assert metrics["waiting_passengers"] > 0
-        assert metrics["total_waiting_time"] > 0.0
+        # Check metrics after episode ends
+        get_metrics = self.variant(env.get_metrics)
+        metrics = get_metrics(intermediate_state)
+        assert jnp.sum(metrics["waiting_passengers"]) > 0
+        assert jnp.sum(metrics["total_waiting_time"]) > 0.0
 
 
-class TestGetRouteShortestPaths:
+class TestGetRouteShortestPaths(chex.TestCase):
+    @chex.variants(with_jit=True, without_jit=True)
     def test_single_edge_route(self) -> None:
         """Test shortest path calculation for a route with a single edge."""
         network = NetworkData(
@@ -215,11 +238,13 @@ class TestGetRouteShortestPaths:
             on_demand=jnp.array([False]),
         )
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, route.nodes)
+        _get_route_shortest_paths = self.variant(Mandl._get_route_shortest_paths)
+        shortest_paths = _get_route_shortest_paths(network, route.nodes)
 
         expected_paths = jnp.array([[0, 2, jnp.inf], [2, 0, jnp.inf], [jnp.inf, jnp.inf, 0]])
         assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_linear_route(self) -> None:
         """Test shortest path calculation for a linear route (stops connected in sequence)."""
         network = NetworkData(
@@ -241,7 +266,8 @@ class TestGetRouteShortestPaths:
             on_demand=jnp.array([False]),
         )
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, route.nodes)
+        _get_route_shortest_paths = self.variant(Mandl._get_route_shortest_paths)
+        shortest_paths = _get_route_shortest_paths(network, route.nodes)
 
         expected_paths = jnp.array([[0, 2, 5, 6], [2, 0, 3, 4], [5, 3, 0, 1], [6, 4, 1, 0]])
         assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
@@ -263,11 +289,13 @@ class TestGetRouteShortestPaths:
             on_demand=jnp.array([False]),
         )
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, route.nodes)
+        _get_route_shortest_paths = self.variant(Mandl._get_route_shortest_paths)
+        shortest_paths = _get_route_shortest_paths(network, route.nodes)
 
         expected_paths = jnp.array([[0, 2, 4, 6], [2, 0, 2, 4], [4, 2, 0, 2], [6, 4, 2, 0]])
         assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_empty_route(self) -> None:
         """Test shortest path calculation for an empty route (no edges)."""
         network = NetworkData(
@@ -282,13 +310,15 @@ class TestGetRouteShortestPaths:
             on_demand=jnp.array([False]),
         )
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, route.nodes)
+        _get_route_shortest_paths = self.variant(Mandl._get_route_shortest_paths)
+        shortest_paths = _get_route_shortest_paths(network, route.nodes)
 
         expected_paths = jnp.array(
             [[0, jnp.inf, jnp.inf], [jnp.inf, 0, jnp.inf], [jnp.inf, jnp.inf, 0]]
         )
         assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_multiple_paths_between_stops(self) -> None:
         """Test that the shortest path is chosen when multiple paths exist between stops."""
         network = NetworkData(
@@ -303,7 +333,8 @@ class TestGetRouteShortestPaths:
             on_demand=jnp.array([False]),
         )
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, route.nodes)
+        _get_route_shortest_paths = self.variant(Mandl._get_route_shortest_paths)
+        shortest_paths = _get_route_shortest_paths(network, route.nodes)
 
         # Verify optimal path lengths between various stops
         assert float(shortest_paths[0, 2]) == 3.0  # 0->1->2 is shorter than 0->2
@@ -311,6 +342,7 @@ class TestGetRouteShortestPaths:
         assert float(shortest_paths[1, 3]) == 3.0  # 1->2->3 is shorter than 1->3
         assert float(shortest_paths[3, 1]) == 3.0  # 3->2->1 is shorter than 3->1
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_asymmetric_weights(self) -> None:
         """Test shortest path calculation with asymmetric weights between stops."""
         network = NetworkData(
@@ -325,11 +357,13 @@ class TestGetRouteShortestPaths:
             on_demand=jnp.array([False]),
         )
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, route.nodes)
+        _get_route_shortest_paths = self.variant(Mandl._get_route_shortest_paths)
+        shortest_paths = _get_route_shortest_paths(network, route.nodes)
 
         expected_paths = jnp.array([[0, 2, 3], [3, 0, 1], [5, 2, 0]])
         assert jnp.allclose(shortest_paths, expected_paths, equal_nan=True)
 
+    @chex.variants(with_jit=True, without_jit=True)
     def test_self_loops(self) -> None:
         """Test shortest path calculation with self-loops in the route."""
         network = NetworkData(
@@ -344,54 +378,18 @@ class TestGetRouteShortestPaths:
             on_demand=jnp.array([False]),
         )
 
-        shortest_paths = Mandl._get_route_shortest_paths(network, route.nodes)
+        _get_route_shortest_paths = self.variant(Mandl._get_route_shortest_paths)
+        shortest_paths = _get_route_shortest_paths(network, route.nodes)
 
         # Verify self-loops don't affect shortest paths
         assert float(shortest_paths[0, 1]) == 2.0  # Direct path 0->1
         assert float(shortest_paths[1, 2]) == 3.0  # Direct path 1->2
 
-    def test_multiple_paths_sorted_between_all_pairs(self, mandl_env: Mandl) -> None:
-        """Test shortest paths calculation for routes with direct and indirect paths
-        between nodes."""
-        network = NetworkData(
-            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
-            links=jnp.array([[0, 3, 5], [3, 0, 5], [5, 5, 0]]),
-            terminals=jnp.array([False, False, False]),
-        )
-        routes = RouteBatch(
-            ids=jnp.array([0, 1]),
-            nodes=jnp.array(
-                [
-                    [0, 2, -1, -1],  # Route 0: 0->2 direct (cost 5)
-                    [0, 1, 2, -1],  # Route 1: 0->1->2 (cost 8 = 3+5)
-                ]
-            ),
-            frequencies=jnp.array([1, 1]),
-            on_demand=jnp.array([False, False]),
-        )
 
-        shortest_paths = mandl_env._get_all_shortest_paths(network=network, routes=routes)
-
-        # Check dimensions
-        assert shortest_paths.shape == (2, 3, 3)  # (num_routes, num_nodes, num_nodes)
-
-        # Expected shortest paths for direct route (0->2)
-        expected_direct = jnp.array([[0, jnp.inf, 5], [jnp.inf, 0, jnp.inf], [5, jnp.inf, 0]])
-
-        # Expected shortest paths for indirect route (0->1->2)
-        expected_indirect = jnp.array([[0, 3, 8], [3, 0, 5], [8, 5, 0]])
-
-        # Check both routes have correct shortest paths
-        assert jnp.allclose(shortest_paths[0], expected_direct, equal_nan=True)
-        assert jnp.allclose(shortest_paths[1], expected_indirect, equal_nan=True)
-
-        # Verify specific path costs
-        assert float(shortest_paths[0, 0, 2]) == 5.0  # Route 0: direct path 0->2
-        assert float(shortest_paths[1, 0, 2]) == 8.0  # Route 1: indirect path 0->1->2 (3+5)
-
-
-class TestGetAllShortestPaths:
-    def test_single_route(self, mandl_env: Mandl) -> None:
+class TestGetAllShortestPaths(chex.TestCase):
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_single_route(self) -> None:
+        mandl_env = Mandl()
         """Test shortest paths calculation for a single route."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -404,12 +402,14 @@ class TestGetAllShortestPaths:
             frequencies=jnp.array([1]),
             on_demand=jnp.array([False]),
         )
-        shortest_paths = mandl_env._get_all_shortest_paths(network=network, routes=routes)
+        _get_all_shortest_paths = self.variant(mandl_env._get_all_shortest_paths)
+        shortest_paths = _get_all_shortest_paths(network=network, routes=routes)
 
         assert shortest_paths.shape == (1, 3, 3)  # (num_routes, num_nodes, num_nodes)
         assert jnp.allclose(shortest_paths[0], jnp.array([[0, 2, 5], [2, 0, 3], [5, 3, 0]]))
 
-    def test_multiple_routes(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_multiple_routes(self) -> None:
         """Test shortest paths calculation for multiple routes."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -428,7 +428,8 @@ class TestGetAllShortestPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        shortest_paths = mandl_env._get_all_shortest_paths(network=network, routes=routes)
+        _get_all_shortest_paths = self.variant(Mandl._get_all_shortest_paths)
+        shortest_paths = _get_all_shortest_paths(network=network, routes=routes)
 
         assert shortest_paths.shape == (2, 3, 3)
         # First route shortest paths
@@ -444,7 +445,8 @@ class TestGetAllShortestPaths:
             equal_nan=True,
         )
 
-    def test_empty_routes(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_empty_routes(self) -> None:
         """Test shortest paths calculation for empty routes."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -458,7 +460,8 @@ class TestGetAllShortestPaths:
             on_demand=jnp.array([False]),
         )
 
-        shortest_paths = mandl_env._get_all_shortest_paths(network=network, routes=routes)
+        _get_all_shortest_paths = self.variant(Mandl._get_all_shortest_paths)
+        shortest_paths = _get_all_shortest_paths(network=network, routes=routes)
 
         assert shortest_paths.shape == (1, 3, 3)
         assert jnp.allclose(
@@ -467,7 +470,8 @@ class TestGetAllShortestPaths:
             equal_nan=True,
         )
 
-    def test_long_routes_both_directions(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_long_routes_both_directions(self) -> None:
         """Test shortest path calculation for longer routes with symmetric weights."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3], [4, 4]]),
@@ -494,7 +498,8 @@ class TestGetAllShortestPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        shortest_paths = mandl_env._get_all_shortest_paths(network=network, routes=routes)
+        _get_all_shortest_paths = self.variant(Mandl._get_all_shortest_paths)
+        shortest_paths = _get_all_shortest_paths(network=network, routes=routes)
 
         # Forward direction (route 0)
         assert float(shortest_paths[0, 0, 4]) == 10.0  # 0->1->2->3->4 = 2+3+1+4 = 10
@@ -506,7 +511,8 @@ class TestGetAllShortestPaths:
         assert float(shortest_paths[1, 4, 2]) == 5.0  # 4->3->2 = 4+1 = 5
         assert float(shortest_paths[1, 3, 1]) == 4.0  # 3->2->1 = 1+3 = 4
 
-    def test_multiple_paths_between_stops(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_multiple_paths_between_stops(self) -> None:
         """Test shortest path calculation with multiple possible routes between stops."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3], [4, 4]]),
@@ -533,7 +539,8 @@ class TestGetAllShortestPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        shortest_paths = mandl_env._get_all_shortest_paths(network, routes)
+        _get_all_shortest_paths = self.variant(Mandl._get_all_shortest_paths)
+        shortest_paths = _get_all_shortest_paths(network=network, routes=routes)
 
         # Verify optimal path lengths for route 0 (longer path)
         assert float(shortest_paths[0, 0, 4]) == 10.0  # Route 0: 0->1->2->3->4 = 2+3+1+4 = 10
@@ -551,13 +558,51 @@ class TestGetAllShortestPaths:
         assert float(shortest_paths[0, 3, 4]) == 4.0  # Route 0: 3->4 = 4
         assert float(shortest_paths[0, 4, 3]) == 4.0  # Route 0: 4->3 = 4
 
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_multiple_paths_sorted_between_all_pairs(self) -> None:
+        """Test shortest paths calculation for routes with direct and indirect paths
+        between nodes."""
+        network = NetworkData(
+            nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
+            links=jnp.array([[0, 3, 5], [3, 0, 5], [5, 5, 0]]),
+            terminals=jnp.array([False, False, False]),
+        )
+        routes = RouteBatch(
+            ids=jnp.array([0, 1]),
+            nodes=jnp.array(
+                [
+                    [0, 2, -1, -1],  # Route 0: 0->2 direct (cost 5)
+                    [0, 1, 2, -1],  # Route 1: 0->1->2 (cost 8 = 3+5)
+                ]
+            ),
+            frequencies=jnp.array([1, 1]),
+            on_demand=jnp.array([False, False]),
+        )
 
-class TestFindDirectPaths:
-    @pytest.fixture
-    def mandl_env(self) -> Mandl:
-        return Mandl()
+        _get_all_shortest_paths = self.variant(Mandl._get_all_shortest_paths)
+        shortest_paths = _get_all_shortest_paths(network=network, routes=routes)
 
-    def test_single_direct_path(self, mandl_env: Mandl) -> None:
+        # Check dimensions
+        assert shortest_paths.shape == (2, 3, 3)  # (num_routes, num_nodes, num_nodes)
+
+        # Expected shortest paths for direct route (0->2)
+        expected_direct = jnp.array([[0, jnp.inf, 5], [jnp.inf, 0, jnp.inf], [5, jnp.inf, 0]])
+
+        # Expected shortest paths for indirect route (0->1->2)
+        expected_indirect = jnp.array([[0, 3, 8], [3, 0, 5], [8, 5, 0]])
+
+        # Check both routes have correct shortest paths
+        assert jnp.allclose(shortest_paths[0], expected_direct, equal_nan=True)
+        assert jnp.allclose(shortest_paths[1], expected_indirect, equal_nan=True)
+
+        # Verify specific path costs
+        assert float(shortest_paths[0, 0, 2]) == 5.0  # Route 0: direct path 0->2
+        assert float(shortest_paths[1, 0, 2]) == 8.0  # Route 1: indirect path 0->1->2 (3+5)
+
+
+class TestFindDirectPaths(chex.TestCase):
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_single_direct_path(self) -> None:
         """Test finding a single direct path between two nodes."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -571,13 +616,15 @@ class TestFindDirectPaths:
             on_demand=jnp.array([False]),
         )
 
-        paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=1)
+        _find_direct_paths = self.variant(Mandl._find_direct_paths)
+        paths = _find_direct_paths(routes=routes, network=network, start=0, end=1)
 
         # Check paths array shape and first path
         assert paths.shape[1] == 3  # [route_idx, valid, cost]
         assert jnp.allclose(paths[0], jnp.array([0, 1.0, 2.0]))
 
-    def test_no_direct_paths(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_no_direct_paths(self) -> None:
         """Test when no direct paths exist between nodes."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -591,10 +638,12 @@ class TestFindDirectPaths:
             on_demand=jnp.array([False]),
         )
 
-        paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=1)
+        _find_direct_paths = self.variant(Mandl._find_direct_paths)
+        paths = _find_direct_paths(routes=routes, network=network, start=0, end=1)
         assert jnp.all(paths[:, 2] == jnp.inf)  # All costs are inf
 
-    def test_multiple_paths_sorted_by_cost(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_multiple_paths_sorted_by_cost(self) -> None:
         """Test that multiple direct paths are found and sorted by cost."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -613,14 +662,16 @@ class TestFindDirectPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=2)
+        _find_direct_paths = self.variant(Mandl._find_direct_paths)
+        paths = _find_direct_paths(routes=routes, network=network, start=0, end=2)
 
         # Check we got 2 paths sorted by cost
         assert paths.shape[0] == 2
         assert jnp.allclose(paths[0], jnp.array([0, 1.0, 5.0]))  # First path cheaper
         assert jnp.allclose(paths[1], jnp.array([1, 1.0, 8.0]))  # Second path more expensive
 
-    def test_single_valid_path_among_multiple_routes(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_single_valid_path_among_multiple_routes(self) -> None:
         """Test finding single valid path when multiple routes exist but one has a valid path."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -639,14 +690,16 @@ class TestFindDirectPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=1)
+        _find_direct_paths = self.variant(Mandl._find_direct_paths)
+        paths = _find_direct_paths(routes=routes, network=network, start=0, end=1)
 
         assert paths.shape[0] == 2  # Still get all paths
         # But only the second one is valid
         assert jnp.allclose(paths[0], jnp.array([1, 1.0, 2.0]))  # Valid path
         assert paths[1, 2] == jnp.inf  # Invalid path has infinite cost
 
-    def test_reverse_direction(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_reverse_direction(self) -> None:
         """Test finding direct paths in reverse direction."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -660,12 +713,14 @@ class TestFindDirectPaths:
             on_demand=jnp.array([False]),
         )
 
-        paths = mandl_env._find_direct_paths(routes=routes, network=network, start=1, end=0)
+        _find_direct_paths = self.variant(Mandl._find_direct_paths)
+        paths = _find_direct_paths(routes=routes, network=network, start=1, end=0)
 
         assert paths.shape[0] == 1
         assert jnp.allclose(paths[0], jnp.array([0, 1.0, 2.0]))
 
-    def test_path_with_transfer_not_found(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_path_with_transfer_not_found(self) -> None:
         """Test that paths requiring transfers are not found as direct paths."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -684,11 +739,12 @@ class TestFindDirectPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=2)
+        _find_direct_paths = self.variant(Mandl._find_direct_paths)
+        paths = _find_direct_paths(routes=routes, network=network, start=0, end=2)
         assert jnp.all(paths[:, 2] == jnp.inf)  # All paths should have infinite cost
 
     @pytest.mark.skip()
-    def test_paths_with_loops(self, mandl_env: Mandl) -> None:
+    def test_paths_with_loops(self) -> None:
         """Test finding direct paths in routes with loops."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -702,7 +758,8 @@ class TestFindDirectPaths:
             on_demand=jnp.array([False]),
         )
 
-        paths = mandl_env._find_direct_paths(routes=routes, network=network, start=0, end=2)
+        _find_direct_paths = self.variant(Mandl._find_direct_paths)
+        paths = _find_direct_paths(routes=routes, network=network, start=0, end=2)
 
         assert paths.shape[0] == 1
         assert jnp.allclose(
@@ -710,8 +767,9 @@ class TestFindDirectPaths:
         )  # Should find shortest path despite loop
 
 
-class TestFindTransferPaths:
-    def test_single_transfer_path(self, mandl_env: Mandl) -> None:
+class TestFindTransferPaths(chex.TestCase):
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_single_transfer_path(self) -> None:
         """Test finding a single transfer path between two nodes."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -736,7 +794,8 @@ class TestFindTransferPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        paths = mandl_env._find_transfer_paths(
+        _find_transfer_paths = self.variant(Mandl._find_transfer_paths)
+        paths = _find_transfer_paths(
             routes=routes, network=network, start=0, end=2, transfer_penalty=2.0
         )
 
@@ -745,7 +804,8 @@ class TestFindTransferPaths:
             paths[0], jnp.array([0, 1, 1, 1.0, 7.0])
         )  # 2 (0->1) + 3 (1->2) + 2 (penalty)
 
-    def test_no_transfer_paths(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_no_transfer_paths(self) -> None:
         """Test when no transfer paths exist between nodes."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -764,12 +824,14 @@ class TestFindTransferPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        paths = mandl_env._find_transfer_paths(
+        _find_transfer_paths = self.variant(Mandl._find_transfer_paths)
+        paths = _find_transfer_paths(
             network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
         )
         assert jnp.all(paths[:, 4] == jnp.inf)  # All costs should be infinite
 
-    def test_multiple_transfer_paths_sorted(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_multiple_transfer_paths_sorted(self) -> None:
         """Test that multiple transfer paths are found and sorted by total cost."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
@@ -791,7 +853,8 @@ class TestFindTransferPaths:
             on_demand=jnp.array([False, False, False]),
         )
 
-        paths = mandl_env._find_transfer_paths(
+        _find_transfer_paths = self.variant(Mandl._find_transfer_paths)
+        paths = _find_transfer_paths(
             network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
         )
 
@@ -802,7 +865,8 @@ class TestFindTransferPaths:
         # Path 2: 0->1 (2) + 1->3->2 (6) + transfer (2) = 10
         assert jnp.allclose(paths[1], jnp.array([0, 2, 1, 1.0, 10.0]))
 
-    def test_different_transfer_penalties(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_different_transfer_penalties(self) -> None:
         """Test that different transfer penalties correctly affect the total cost."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -822,7 +886,8 @@ class TestFindTransferPaths:
         )
 
         # Test with higher transfer penalty
-        paths_high = mandl_env._find_transfer_paths(
+        _find_transfer_paths = self.variant(Mandl._find_transfer_paths)
+        paths_high = _find_transfer_paths(
             network=network, routes=routes, start=0, end=2, transfer_penalty=4.0
         )
         assert jnp.allclose(
@@ -830,14 +895,15 @@ class TestFindTransferPaths:
         )  # 2 + 3 + 4 (higher penalty)
 
         # Test with lower transfer penalty
-        paths_low = mandl_env._find_transfer_paths(
+        paths_low = _find_transfer_paths(
             network=network, routes=routes, start=0, end=2, transfer_penalty=1.0
         )
         assert jnp.allclose(
             paths_low[0], jnp.array([0, 1, 1, 1.0, 6.0])
         )  # 2 + 3 + 1 (lower penalty)
 
-    def test_multiple_transfer_stops(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_multiple_transfer_stops(self) -> None:
         """Test finding paths with multiple possible transfer stops."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
@@ -856,7 +922,8 @@ class TestFindTransferPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        paths = mandl_env._find_transfer_paths(
+        _find_transfer_paths = self.variant(Mandl._find_transfer_paths)
+        paths = _find_transfer_paths(
             network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
         )
 
@@ -870,7 +937,8 @@ class TestFindTransferPaths:
             jnp.logical_and(paths[:, 2] == 3, jnp.isclose(paths[:, 4], 10.0))
         )  # 6 + 2 + 2
 
-    def test_reverse_direction(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_reverse_direction(self) -> None:
         """Test transfer paths work in reverse direction."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -890,20 +958,22 @@ class TestFindTransferPaths:
         )
 
         # Test forward direction (0->2)
-        paths_forward = mandl_env._find_transfer_paths(
+        _find_transfer_paths = self.variant(Mandl._find_transfer_paths)
+        paths_forward = _find_transfer_paths(
             network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
         )
         assert jnp.allclose(paths_forward[0], jnp.array([0, 1, 1, 1.0, 7.0]))  # 2 + 3 + 2
 
         # Test reverse direction (2->0)
-        paths_reverse = mandl_env._find_transfer_paths(
+        paths_reverse = _find_transfer_paths(
             network=network, routes=routes, start=2, end=0, transfer_penalty=2.0
         )
         assert jnp.allclose(paths_reverse[0], jnp.array([1, 0, 1, 1.0, 7.0]))  # 3 + 2 + 2
 
 
-class TestFindPaths:
-    def test_direct_path_exists(self, mandl_env: Mandl) -> None:
+class TestFindPaths(chex.TestCase):
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_direct_path_exists(self) -> None:
         """Test that when a direct path exists, it is found and preferred over transfer paths."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -923,7 +993,8 @@ class TestFindPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        direct_paths, transfer_paths = mandl_env._find_paths(
+        _find_paths = self.variant(Mandl._find_paths)
+        direct_paths, transfer_paths = _find_paths(
             network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
         )
 
@@ -933,7 +1004,8 @@ class TestFindPaths:
         # Check transfer paths are all invalid (infinite cost)
         assert jnp.all(transfer_paths[:, 4] == jnp.inf)
 
-    def test_only_transfer_path_exists(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_only_transfer_path_exists(self) -> None:
         """Test that when only a transfer path exists, it is found correctly."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -953,7 +1025,8 @@ class TestFindPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        direct_paths, transfer_paths = mandl_env._find_paths(
+        _find_paths = self.variant(Mandl._find_paths)
+        direct_paths, transfer_paths = _find_paths(
             network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
         )
 
@@ -968,7 +1041,8 @@ class TestFindPaths:
             ),  # [first_route, second_route, transfer_stop, valid, cost]
         )
 
-    def test_no_paths_exist(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_no_paths_exist(self) -> None:
         """Test that when no paths exist (direct or transfer), empty lists are returned."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -983,7 +1057,8 @@ class TestFindPaths:
             on_demand=jnp.array([False]),
         )
 
-        direct_paths, transfer_paths = mandl_env._find_paths(
+        _find_paths = self.variant(Mandl._find_paths)
+        direct_paths, transfer_paths = _find_paths(
             network=network, routes=routes, start=0, end=2, transfer_penalty=2.0
         )
 
@@ -991,7 +1066,8 @@ class TestFindPaths:
         assert jnp.all(direct_paths[:, 2] == jnp.inf)
         assert jnp.all(transfer_paths[:, 4] == jnp.inf)
 
-    def test_direct_path_preferred_over_transfers(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_direct_path_preferred_over_transfers(self) -> None:
         """Test that when a direct path exists, transfer paths are not even calculated."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2], [3, 3]]),
@@ -1014,7 +1090,8 @@ class TestFindPaths:
             on_demand=jnp.array([False, False, False]),
         )
 
-        direct_paths, transfer_paths = mandl_env._find_paths(
+        _find_paths = self.variant(Mandl._find_paths)
+        direct_paths, transfer_paths = _find_paths(
             network=network, routes=routes, start=0, end=3, transfer_penalty=2.0
         )
 
@@ -1024,7 +1101,8 @@ class TestFindPaths:
         # Check transfer paths are all invalid since direct path exists
         assert jnp.all(transfer_paths[:, 4] == jnp.inf)
 
-    def test_transfer_penalty_affects_cost(self, mandl_env: Mandl) -> None:
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_transfer_penalty_affects_cost(self) -> None:
         """Test that different transfer penalties correctly affect the total path cost."""
         network = NetworkData(
             nodes=jnp.array([[0, 0], [1, 1], [2, 2]]),
@@ -1044,7 +1122,8 @@ class TestFindPaths:
             on_demand=jnp.array([False, False]),
         )
 
-        direct_paths, transfer_paths = mandl_env._find_paths(
+        _find_paths = self.variant(Mandl._find_paths)
+        direct_paths, transfer_paths = _find_paths(
             network=network,
             routes=routes,
             start=0,

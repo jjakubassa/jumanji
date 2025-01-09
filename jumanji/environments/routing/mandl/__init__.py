@@ -22,4 +22,4 @@ from jumanji.environments.routing.mandl.types import (
     TransferPaths,
 )
 
-__all__ = ["DirectPaths", "NetworkData", "Observation", "Route", "State", "TransferPaths"]
+__all__ = ["DirectPaths", "NetworkData", "Observation", "RouteBatch", "State", "TransferPaths"]

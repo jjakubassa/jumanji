@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import time
-from typing import List, Tuple
 
+import chex
 import jax
 import numpy as np
 
@@ -25,7 +25,7 @@ from jumanji.environments.routing.mandl.profiler import (
 )
 
 
-def run_episode(env, key, jitted: bool = False) -> Tuple[float, List[float]]:
+def run_episode(env: Mandl, key: chex.PRNGKey, jitted: bool = False) -> tuple[float, list[float]]:
     """Run a single episode and return total time and step times."""
     # JIT compile if requested
     reset_fn = jax.jit(env.reset) if jitted else env.reset
@@ -58,14 +58,15 @@ def run_episode(env, key, jitted: bool = False) -> Tuple[float, List[float]]:
 
 
 @profile_function
-def benchmark_episodes(n_episodes: int = 2, jitted: bool = False):
+def benchmark_episodes(
+    n_episodes: int = 2, jitted: bool = False
+) -> tuple[list[float], list[float]]:
     """Run multiple episodes and profile performance."""
     env = Mandl(num_flex_routes=4)
     key = jax.random.PRNGKey(0)
 
-    episode_times = []
-    all_step_times = []
-    total_rewards = []
+    episode_times: list[float] = []
+    all_step_times: list[float] = []
 
     # Warmup JIT if enabled
     if jitted:
@@ -74,7 +75,7 @@ def benchmark_episodes(n_episodes: int = 2, jitted: bool = False):
         print("Warmup complete.")
 
     print(f"\nRunning {n_episodes} episodes {'with' if jitted else 'without'} JIT...")
-    for i in range(n_episodes):
+    for _ in range(n_episodes):
         key, episode_key = jax.random.split(key)
         episode_time, step_times = run_episode(env, episode_key, jitted)
 
@@ -95,7 +96,8 @@ def benchmark_episodes(n_episodes: int = 2, jitted: bool = False):
 
 
 @profile_function
-def benchmark_component_tests(n_runs: int = 10, jitted: bool = False):
+@profile_function
+def benchmark_component_tests(n_runs: int = 10, jitted: bool = False) -> dict[str, list[float]]:
     """Profile individual components."""
     env = Mandl(num_flex_routes=4)
     key = jax.random.PRNGKey(0)
@@ -123,11 +125,11 @@ def benchmark_component_tests(n_runs: int = 10, jitted: bool = False):
         )
         print("Warmup complete.")
 
-    results = {}
+    results: dict[str, list[float]] = {}
 
     # Profile path finding
     with ProfilingContext("Find paths"):
-        times = []
+        times: list[float] = []
         for _ in range(n_runs):
             start = jax.random.randint(key, (), 0, env.num_nodes)
             end = jax.random.randint(key, (), 0, env.num_nodes)
@@ -161,15 +163,30 @@ def benchmark_component_tests(n_runs: int = 10, jitted: bool = False):
     for component, times in results.items():
         avg_time = np.mean(times)
         std_time = np.std(times)
-        print(f"{component}: {avg_time:.4f} ± {std_time:.4f} seconds per call")
+        print(f"{component}: {avg_time:.8f} ± {std_time:.8f} seconds per call")
 
     return results
 
 
 if __name__ == "__main__":
-    N_EPISODES = 10
-    N_COMPONENT_RUNS = 100
+    N_EPISODES = 5
+    N_COMPONENT_RUNS = 10_000
 
+    print("\nWith JIT:")
+    jitted_component_results = benchmark_component_tests(N_COMPONENT_RUNS, jitted=True)
+
+    print("\nRunning component benchmarks...")
+    print("\nWithout JIT:")
+    unjitted_component_results = benchmark_component_tests(N_COMPONENT_RUNS, jitted=False)
+
+    print("\nComponents:")
+    for component in jitted_component_results:
+        unjitted_mean = np.mean(unjitted_component_results[component])
+        jitted_mean = np.mean(jitted_component_results[component])
+        speedup = unjitted_mean / jitted_mean
+        print(f"{component} speedup with JIT: {speedup:.2f}x")
+
+    ## episodes
     print("Running episode benchmarks...")
     print("\nWithout JIT:")
     unjitted_episode_times, unjitted_step_times = benchmark_episodes(N_EPISODES, jitted=False)
@@ -177,22 +194,8 @@ if __name__ == "__main__":
     print("\nWith JIT:")
     jitted_episode_times, jitted_step_times = benchmark_episodes(N_EPISODES, jitted=True)
 
-    print("\nRunning component benchmarks...")
-    print("\nWithout JIT:")
-    unjitted_component_results = benchmark_component_tests(N_COMPONENT_RUNS, jitted=False)
-
-    print("\nWith JIT:")
-    jitted_component_results = benchmark_component_tests(N_COMPONENT_RUNS, jitted=True)
-
     # Print comparison
     print("\nPerformance Comparison (JIT vs no JIT):")
     print("Episodes:")
     jit_speedup = np.mean(unjitted_episode_times) / np.mean(jitted_episode_times)
     print(f"Average episode speedup with JIT: {jit_speedup:.2f}x")
-
-    print("\nComponents:")
-    for component in unjitted_component_results:
-        unjitted_mean = np.mean(unjitted_component_results[component])
-        jitted_mean = np.mean(jitted_component_results[component])
-        speedup = unjitted_mean / jitted_mean
-        print(f"{component} speedup with JIT: {speedup:.2f}x")

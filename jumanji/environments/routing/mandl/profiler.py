@@ -18,29 +18,31 @@ from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
 import jax
+from typing_extensions import Generator
 
 
 class ProfilingContext:
     """Context manager for profiling code blocks."""
 
-    def __init__(self, name: str):
-        self.name = name
-        self.start = None
+    def __init__(self, name: str) -> None:
+        self.name: str = name
+        self.start: float | None = None
 
-    def __enter__(self):
+    def __enter__(self) -> "ProfilingContext":
         self.start = time.perf_counter()
         return self
 
-    def __exit__(self, *args):
-        elapsed = time.perf_counter() - self.start
-        # print(f"{self.name}: {elapsed:.4f} seconds")
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
+    ) -> None:
+        return None
 
 
-def profile_function(func: Callable) -> Callable:
+def profile_function(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator to profile a function."""
 
     @functools.wraps(func)
-    def wrapper(*args, **kwargs) -> Any:
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         with ProfilingContext(func.__name__):
             result = func(*args, **kwargs)
             # Ensure computation is complete before ending profiling
@@ -52,9 +54,9 @@ def profile_function(func: Callable) -> Callable:
 
 
 @contextmanager
-def trace_context(name: Optional[str] = None):
+def trace_context(name: Optional[str] = None) -> Generator:
     """Context manager for timing code blocks."""
-    start = time.perf_counter()
+    # start = time.perf_counter()
     yield
-    elapsed = time.perf_counter() - start
+    # elapsed = time.perf_counter() - start
     # print(f"{name if name else 'unnamed'}: {elapsed:.4f} seconds")

@@ -368,7 +368,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         # Calculate done condition
         done = new_state.current_time >= self.simulation_steps
 
-        def create_done_timestep(args):
+        def create_done_timestep(args: tuple[State, jnp.ndarray]) -> TimeStep[Observation]:
             new_state, waiting_penalty_factor = args
             completed_time = jnp.sum(
                 jnp.where(
@@ -394,7 +394,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 reward=reward,
             )
 
-        def create_transition_timestep(args):
+        def create_transition_timestep(args: tuple[State, jnp.ndarray]) -> TimeStep[Observation]:
             new_state, _ = args
             return transition(
                 observation=self._state_to_observation(new_state),
@@ -408,20 +408,21 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
 
         return new_state, timestep
 
-    def get_metrics(self, state: State) -> dict[str, float]:
+    def get_metrics(self, state: State) -> dict[str, jnp.ndarray]:
         metrics = {
-            "completed_passengers": jnp.sum(state.passengers.statuses == 3).item(),
-            "waiting_passengers": jnp.sum(state.passengers.statuses == 1).item(),
-            "in_vehicle_passengers": jnp.sum(state.passengers.statuses == 2).item(),
-            "total_waiting_time": jnp.sum(state.passengers.time_waiting).item(),
-            "total_in_vehicle_time": jnp.sum(state.passengers.time_in_vehicle).item(),
+            # Remove .item() calls and keep values as JAX arrays
+            "completed_passengers": jnp.sum(state.passengers.statuses == 3),
+            "waiting_passengers": jnp.sum(state.passengers.statuses == 1),
+            "in_vehicle_passengers": jnp.sum(state.passengers.statuses == 2),
+            "total_waiting_time": jnp.sum(state.passengers.time_waiting),
+            "total_in_vehicle_time": jnp.sum(state.passengers.time_in_vehicle),
         }
 
         # Add route-related metrics
         for i in range(self.num_flex_routes):
             route = state.routes.nodes[len(state.routes.ids) - self.num_flex_routes + i]
-            metrics[f"route_{i}_length"] = jnp.sum(route != -1).item()
-            metrics[f"route_{i}_wait_actions"] = jnp.sum(route == -1).item()
+            metrics[f"route_{i}_length"] = jnp.sum(route != -1)
+            metrics[f"route_{i}_wait_actions"] = jnp.sum(route == -1)
 
         return metrics
 
@@ -435,7 +436,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         new_nodes = routes.nodes
         num_fixed_routes = len(routes.ids) - self.num_flex_routes
 
-        def update_route(i, nodes):
+        def update_route(i: int, nodes: jnp.ndarray) -> jnp.ndarray:
             all_idx = num_fixed_routes + i
             route = nodes[all_idx]
 
@@ -571,16 +572,16 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         # Get position of current node in valid route
         current_pos = jnp.where((route == current_edge[1]) & valid_mask, valid_indices, -1).max()
 
-        def process_valid_route(_):
+        def process_valid_route(vehicles: VehicleBatch) -> VehicleBatch:
             next_pos = current_pos + direction
 
-            def handle_end(_):
+            def handle_end(_: None) -> tuple[jnp.ndarray, jnp.ndarray]:
                 return vehicles.directions.at[idx].set(-1), route_len - 2
 
-            def handle_start(_):
-                return vehicles.directions.at[idx].set(1), 1
+            def handle_start(_: None) -> tuple[jnp.ndarray, jnp.ndarray]:
+                return vehicles.directions.at[idx].set(1), jnp.ones(1)
 
-            def handle_middle(_):
+            def handle_middle(_: None) -> tuple[jnp.ndarray, jnp.ndarray]:
                 return vehicles.directions, next_pos
 
             directions, next_pos = jax.lax.cond(
@@ -601,7 +602,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 times_on_edge=vehicles.times_on_edge.at[idx].set(0),
             )
 
-        return jax.lax.cond(route_len > 0, process_valid_route, lambda _: vehicles, None)
+        return process_valid_route(vehicles)
 
     @staticmethod
     def _update_passenger_status(state: State) -> State:
@@ -634,30 +635,37 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 statuses_inner, vehicle_passengers_inner = carry_inner
                 passenger_idx = vehicle_passengers_inner[vehicle_idx, seat_idx]
 
-                def complete_journey(_: None) -> tuple[jnp.ndarray, jnp.ndarray]:
-                    new_statuses = statuses_inner.at[passenger_idx].set(3)
-                    new_vehicle_passengers = vehicle_passengers_inner.at[vehicle_idx, seat_idx].set(
-                        -1
-                    )
+                def complete_journey(
+                    data: tuple[jnp.ndarray, jnp.ndarray],
+                ) -> tuple[jnp.ndarray, jnp.ndarray]:
+                    s_inner, vp_inner = data
+                    new_statuses = s_inner.at[passenger_idx].set(3)
+                    new_vehicle_passengers = vp_inner.at[vehicle_idx, seat_idx].set(-1)
                     return new_statuses, new_vehicle_passengers
 
-                def keep_status(_: None) -> tuple[jnp.ndarray, jnp.ndarray]:
-                    return statuses_inner, vehicle_passengers_inner
+                def keep_status(
+                    data: tuple[jnp.ndarray, jnp.ndarray],
+                ) -> tuple[jnp.ndarray, jnp.ndarray]:
+                    return data  # no change
 
-                return jax.lax.cond(
+                # Annotate the result of jax.lax.cond as a tuple of jnp.ndarray
+                journey_update: tuple[jnp.ndarray, jnp.ndarray] = jax.lax.cond(
                     (passenger_idx != -1)
                     & (current_node == new_passengers.destinations[passenger_idx]),
                     complete_journey,
                     keep_status,
-                    None,
+                    operand=(statuses_inner, vehicle_passengers_inner),
                 )
 
-            return jax.lax.fori_loop(
+                return journey_update
+
+            result: tuple[jnp.ndarray, jnp.ndarray] = jax.lax.fori_loop(
                 0,
                 new_vehicles.passengers.shape[1],
                 update_passenger,
                 (statuses, vehicle_passengers),
             )
+            return result
 
         # Process all vehicles
         new_statuses, new_vehicle_passengers = jax.lax.fori_loop(
@@ -696,82 +704,89 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         network: NetworkData,
         current_time: int,
     ) -> tuple[PassengerBatch, VehicleBatch]:
-        """Assign waiting passengers to vehicles based on routes and capacity."""
-        # Pre-compute masks for valid assignments
-        waiting_mask = passengers.statuses == 1
-        capacity_mask = vehicles.passengers == -1
-
-        # Get vehicle positions
+        """Assign waiting passengers to vehicles efficiently using JAX."""
+        # Compute available capacity per vehicle once
+        available_seats = jnp.sum(vehicles.passengers == -1, axis=1)
         vehicle_positions = vehicles.current_edges[:, 1]
-        available_seats = jnp.sum(capacity_mask, axis=1)
 
-        # Compute costs matrix
-        def compute_costs(p_idx):
+        # Pre-compute valid passenger mask
+        waiting_mask = passengers.statuses == 1
+
+        def compute_costs(p_idx: int) -> jnp.ndarray:
+            """Compute costs for assigning a passenger to all vehicles."""
             origin = passengers.origins[p_idx]
             dest = passengers.destinations[p_idx]
             is_waiting = waiting_mask[p_idx]
 
-            def compute_vehicle_cost(v_idx):
+            def compute_vehicle_cost(v_idx: int) -> jnp.ndarray:
                 vehicle_pos = vehicle_positions[v_idx]
                 has_capacity = available_seats[v_idx] > 0
 
-                pickup_paths, _ = Mandl._find_paths(
-                    network=network,
-                    routes=routes,
-                    start=vehicle_pos,
-                    end=origin,
-                )
-                delivery_paths, _ = Mandl._find_paths(
-                    network=network,
-                    routes=routes,
-                    start=origin,
-                    end=dest,
-                )
+                # Get path costs
+                route_idx = vehicles.route_ids[v_idx]
+                route_paths = Mandl._get_route_shortest_paths(network, routes.nodes[route_idx])
+                pickup_cost = route_paths[vehicle_pos, origin]
+                delivery_cost = route_paths[origin, dest]
 
-                pickup_cost = jnp.min(pickup_paths[:, 2])
-                delivery_cost = jnp.min(delivery_paths[:, 2])
                 total_cost = pickup_cost + delivery_cost
-
-                return jnp.where(is_waiting & has_capacity, total_cost, jnp.inf)
+                return jnp.where(jnp.logical_and(is_waiting, has_capacity), total_cost, jnp.inf)
 
             return jax.vmap(compute_vehicle_cost)(jnp.arange(len(vehicles.ids)))
 
-        costs = jax.vmap(compute_costs)(jnp.arange(len(passengers.ids)))
+        # Compute all costs
+        all_costs = jax.vmap(compute_costs)(jnp.arange(len(passengers.ids)))
 
         # Find best assignments
-        best_vehicles = jnp.argmin(costs, axis=1)
-        min_costs = jnp.min(costs, axis=1)
+        best_vehicles = jnp.argmin(all_costs, axis=1)
+        min_costs = jnp.min(all_costs, axis=1)
 
-        # Process assignments using scan
-        def scan_fn(carry, x):
-            i, vehicle_idx, cost = x
-            p_state, v_state = carry
+        def process_assignments(
+            state: tuple[PassengerBatch, VehicleBatch], idxs: tuple[int, int, float]
+        ) -> tuple[tuple[PassengerBatch, VehicleBatch], None]:
+            curr_passengers, curr_vehicles = state
+            p_idx, v_idx, cost = idxs
 
-            def assign():
-                # Find first empty seat
-                empty_seat = jnp.argmax(v_state.passengers[vehicle_idx] == -1)
+            def assign() -> tuple[PassengerBatch, VehicleBatch]:
+                # Find first empty seat using integer indexing
+                assert isinstance(v_idx, jnp.ndarray)
+                v_idx_int = v_idx.astype(jnp.int32)
+                empty_seat = jnp.argmax(curr_vehicles.passengers[v_idx_int] == -1)
 
                 # Update passenger status
-                new_p_statuses = p_state.statuses.at[i].set(2)
-                new_p_state = p_state._replace(statuses=new_p_statuses)
+                assert isinstance(p_idx, jnp.ndarray)
+                p_idx_int = p_idx.astype(jnp.int32)
+                new_statuses = curr_passengers.statuses.at[p_idx_int].set(2)
+                new_passengers = curr_passengers._replace(statuses=new_statuses)
 
                 # Update vehicle passengers
-                new_v_passengers = v_state.passengers.at[vehicle_idx, empty_seat].set(i)
-                new_v_state = v_state._replace(passengers=new_v_passengers)
+                new_passengers_array = curr_vehicles.passengers.at[v_idx_int, empty_seat].set(
+                    p_idx_int
+                )
+                new_vehicles = curr_vehicles._replace(passengers=new_passengers_array)
 
-                return new_p_state, new_v_state
+                return new_passengers, new_vehicles
 
             return jax.lax.cond(
-                cost < jnp.inf, lambda _: assign(), lambda _: (p_state, v_state), None
+                cost < jnp.inf, lambda _: assign(), lambda _: (curr_passengers, curr_vehicles), None
             ), None
 
-        # Create scan input
-        indices = jnp.arange(len(passengers.ids))
-        scan_input = (indices, best_vehicles, min_costs)
+        # Create assignments array with integer types
+        assignments = jnp.stack(
+            [
+                jnp.arange(len(passengers.ids), dtype=jnp.int32),
+                best_vehicles.astype(jnp.int32),
+                min_costs,
+            ],
+            axis=1,
+        )
 
-        # Run scan
+        # Sort assignments by cost
+        sorted_indices = jnp.argsort(assignments[:, 2])
+        sorted_assignments = assignments[sorted_indices]
+
+        # Process assignments
         (final_passengers, final_vehicles), _ = jax.lax.scan(
-            scan_fn, (passengers, vehicles), scan_input
+            process_assignments, (passengers, vehicles), sorted_assignments
         )
 
         return final_passengers, final_vehicles
@@ -1051,8 +1066,8 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         """Calculate shortest paths between all pairs of nodes for a given route."""
         if route.ndim not in (1, 2):
             raise ValueError(
-                f"_get_route_shortest_paths expects a route vector or a single route in batch form, "
-                f"got {route.ndim} dimensions"
+                f"_get_route_shortest_paths expects a route vector or a single route in batch"
+                f"form,  got {route.ndim} dimensions"
             )
         if route.ndim == 2 and route.shape[0] != 1:
             raise ValueError(
@@ -1209,7 +1224,9 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         tp = tp.flatten()
 
         # Vectorized computation of path costs
-        def compute_path_cost(first_route, second_route, transfer_point):
+        def compute_path_cost(
+            first_route: jnp.ndarray, second_route: jnp.ndarray, transfer_point: jnp.ndarray
+        ) -> jnp.ndarray:
             first_leg = shortest_paths_costs[first_route, start, transfer_point]
             second_leg = shortest_paths_costs[second_route, transfer_point, end]
 
