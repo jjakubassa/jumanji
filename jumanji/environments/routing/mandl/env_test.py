@@ -36,6 +36,7 @@ from jax import numpy as jnp
 from jumanji.environments.routing.mandl.env import Mandl
 from jumanji.environments.routing.mandl.types import (
     NetworkData,
+    PassengerBatch,
     RouteBatch,
     State,
 )
@@ -140,24 +141,87 @@ class TestMandlEnv(chex.TestCase):
             step(state, invalid_action)
 
     @chex.variants(with_jit=True, without_jit=True)
-    def test_passenger_status_updates(self) -> None:
-        """Test passenger status updates."""
-        env = Mandl(num_flex_routes=2)
+    def test_passenger_status_transitions(self) -> None:
+        """Test that passenger statuses transition correctly through different states.
+
+        Tests four key scenarios:
+        1. Status 0 -> 1: Passenger becomes eligible but no vehicle available (should accumulate
+        waiting time)
+        2. Status 0 -> 1 -> 2: Passenger becomes eligible and gets immediate pickup (no
+        waiting time)
+        3. Status 2: Passenger in vehicle (should accumulate in-vehicle time)
+        4. Status 3: Completed passenger (should maintain status and times)
+        """
+        env = Mandl(num_flex_routes=2, simulation_steps=10)
         key = jax.random.PRNGKey(0)
+
         reset = self.variant(env.reset)
         state, _ = reset(key)
 
-        # Get initial passenger counts by status
-        initial_waiting = sum(state.passengers.statuses == 1)
+        # Set up test passengers
+        test_passengers = state.passengers._replace(
+            # Four test passengers for different scenarios
+            statuses=jnp.array([0, 0, 2, 3] + [0] * (len(state.passengers.statuses) - 4)),
+            departure_times=jnp.array(
+                [1.0, 1.0, 0.0, 0.0] + [100.0] * (len(state.passengers.departure_times) - 4)
+            ),
+            origins=jnp.array([0, 1, 2, 3] + [0] * (len(state.passengers.origins) - 4)),
+            destinations=jnp.array([1, 2, 3, 4] + [1] * (len(state.passengers.destinations) - 4)),
+            time_waiting=jnp.array(
+                [0.0, 0.0, 0.0, 2.0] + [0.0] * (len(state.passengers.time_waiting) - 4)
+            ),
+            time_in_vehicle=jnp.array(
+                [0.0, 0.0, 1.0, 3.0] + [0.0] * (len(state.passengers.time_in_vehicle) - 4)
+            ),
+        )
 
-        # Step with wait action
-        action = jnp.full((env.num_flex_routes,), env.num_nodes)
+        # Set up vehicles for testing immediate pickup
+        test_vehicles = state.vehicles._replace(
+            current_edges=jnp.array([[0, 1], [0, 0]] + [[0, 0]] * (len(state.vehicles.ids) - 2)),
+            passengers=jnp.full((len(state.vehicles.ids), env.max_capacity), -1),
+        )
+
+        # Set initial state
+        state = replace(
+            state, passengers=test_passengers, vehicles=test_vehicles, current_time=1
+        )  # Set time to when passengers become eligible
+
+        # Take a step
+        action = jnp.full((env.num_flex_routes,), -1)  # Wait action
         step = self.variant(env.step)
         new_state, _ = step(state, action)
 
-        # Check that some passengers might have changed status
-        new_waiting = sum(new_state.passengers.statuses == 1)
-        assert new_waiting >= initial_waiting  # More or same number of waiting passengers
+        # 1. Verify passenger that becomes eligible but no vehicle available
+        chex.assert_trees_all_equal(
+            new_state.passengers.statuses[0], 1
+        )  # Should transition to waiting
+        chex.assert_trees_all_equal(
+            new_state.passengers.time_waiting[0], 1.0
+        )  # Should accumulate waiting time
+
+        # 2. Verify passenger that gets immediate pickup
+        chex.assert_trees_all_equal(
+            new_state.passengers.statuses[1], 2
+        )  # Should transition to in-vehicle
+        chex.assert_trees_all_equal(
+            new_state.passengers.time_waiting[1], 0.0
+        )  # Should have no waiting time
+
+        # 3. Verify passenger in vehicle
+        chex.assert_trees_all_equal(new_state.passengers.statuses[2], 2)  # Should stay in-vehicle
+        chex.assert_trees_all_equal(
+            new_state.passengers.time_in_vehicle[2],
+            2.0,  # Previous time (1.0) + 1 timestep
+        )
+
+        # 4. Verify completed passenger
+        chex.assert_trees_all_equal(new_state.passengers.statuses[3], 3)  # Should stay completed
+        chex.assert_trees_all_equal(
+            new_state.passengers.time_waiting[3], 2.0
+        )  # Should maintain waiting time
+        chex.assert_trees_all_equal(
+            new_state.passengers.time_in_vehicle[3], 3.0
+        )  # Should maintain in-vehicle time
 
     @chex.variants(with_jit=True, without_jit=True)
     def test_vehicle_movement(self) -> None:
@@ -179,47 +243,38 @@ class TestMandlEnv(chex.TestCase):
         assert not jnp.array_equal(initial_positions, new_state.vehicles.current_edges)
 
     @chex.variants(with_jit=True, without_jit=True)
-    def test_reward_calculation(self) -> None:
-        """Test that rewards are calculated correctly."""
-        env = Mandl(num_flex_routes=2, waiting_penalty_factor=2.0, simulation_steps=2)
+    def test_reward_calculation_components(self) -> None:
+        """Test reward calculation with three passengers"""
+        env = Mandl(num_flex_routes=2, simulation_steps=1, waiting_penalty_factor=2.0)
         key = jax.random.PRNGKey(0)
 
-        # Reset environment
         reset = self.variant(env.reset)
         state, _ = reset(key)
 
-        # Manually set some passengers to waiting state to ensure non-zero reward when episode ends
-        state = replace(
-            state,
-            passengers=state.passengers._replace(
-                statuses=state.passengers.statuses.at[0:10].set(
-                    1
-                ),  # Set first 10 passengers to waiting
-                time_waiting=state.passengers.time_waiting.at[0:10].set(1.0),  # Add waiting time
-            ),
+        test_passengers = PassengerBatch(
+            ids=jnp.arange(3),
+            statuses=jnp.array([3, 2, 1]),
+            origins=jnp.array([0, 1, 5]),
+            destinations=jnp.array([1, 2, 6]),
+            departure_times=jnp.array([0.0, 0.0, 0.0]),
+            time_waiting=jnp.array([1.0, 1.0, 2.0]),
+            time_in_vehicle=jnp.array([2.0, 3.0, 0.0]),
         )
 
-        # Take a wait action
-        action = jnp.full((env.num_flex_routes,), -1)
+        state = replace(state, passengers=test_passengers)
 
-        # First step (not terminal)
+        # Take one step to reach terminal state
         step = self.variant(env.step)
-        intermediate_state, timestep = step(state, action)
-        assert not timestep.last()  # The episode should not be done yet
-        assert timestep.reward == jnp.array(0.0)  # No reward during episode
+        _, timestep = step(state, jnp.array([-1, -1]))
 
-        # Second step (terminal)
-        _, timestep = step(intermediate_state, action)
-        assert timestep.last()  # The episode should now be done
-        assert timestep.reward < jnp.array(
-            -(10**-5)
-        )  # Should be negative due to waiting passengers
-
-        # Check metrics after episode ends
-        get_metrics = self.variant(env.get_metrics)
-        metrics = get_metrics(intermediate_state)
-        assert jnp.sum(metrics["waiting_passengers"]) > 0
-        assert jnp.sum(metrics["total_waiting_time"]) > 0.0
+        # Reward calculation: -(journey_times + waiting_penalty)
+        # passenger 0: 2 in vehicle, 1 waiting
+        # passenger 1: 4 in vehicle, 1 waiting
+        # passenger 2: 0 in vehicle, 3 waiting
+        # Journey times: waiting(2.0) + in_vehicle(6.0) = 8.0
+        # Waiting penalty: waiting(3.0) * factor(2.0) = 6.0
+        # Total = -(6.0 + 8.0) = -14.0
+        chex.assert_trees_all_close(timestep.reward, jnp.array(-14.0))
 
 
 class TestGetRouteShortestPaths(chex.TestCase):
