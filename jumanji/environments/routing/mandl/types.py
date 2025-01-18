@@ -186,3 +186,6 @@ class Observation(NamedTuple):
 
     current_time: int
     """Current simulation timestep"""
+
+    action_mask: jnp.ndarray
+    """Boolean array indicating valid actions. Shape: (n_nodes,)"""

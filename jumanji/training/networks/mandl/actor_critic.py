@@ -87,7 +87,29 @@ class MandlTorso(hk.Module):
             axis=1,
         )  # Result: (B, R+2, model_size)
 
-        # Apply transformer blocks
+        # Create attention mask
+        batch_size = combined_features.shape[0]
+        seq_len = combined_features.shape[1]
+
+        # Create base mask (batch_size, 1, seq_len, seq_len) for multi-head attention
+        attention_mask = jnp.ones((batch_size, 1, seq_len, seq_len))
+
+        # Prevent routes from attending to other routes
+        route_start = 1  # After network features
+        route_end = route_start + obs.routes.shape[1]
+        attention_mask = attention_mask.at[:, 0, route_start:route_end, route_start:route_end].set(
+            0
+        )
+
+        # Allow all to attend to network and passenger features
+        attention_mask = attention_mask.at[:, 0, :, [0, -1]].set(1)
+
+        # Broadcast mask for all heads
+        attention_mask = jnp.broadcast_to(
+            attention_mask, (batch_size, self.transformer_num_heads, seq_len, seq_len)
+        )
+
+        # Apply transformer blocks with mask
         for _ in range(self.transformer_num_blocks):
             transformer = TransformerBlock(
                 num_heads=self.transformer_num_heads,
@@ -97,7 +119,10 @@ class MandlTorso(hk.Module):
                 model_size=self.model_size,
             )
             combined_features = transformer(
-                query=combined_features, key=combined_features, value=combined_features, mask=None
+                query=combined_features,
+                key=combined_features,
+                value=combined_features,
+                mask=attention_mask,
             )
 
         return combined_features
@@ -127,7 +152,24 @@ class MandlTorso(hk.Module):
     def _embed_routes(
         self, routes: jnp.ndarray, frequencies: jnp.ndarray, on_demand: jnp.ndarray
     ) -> jnp.ndarray:
-        # Convert routes to embeddings
+        """Embed routes with position information and route characteristics.
+
+        Args:
+            routes: Route node sequences, shape (batch_size, num_routes, max_route_length)
+            frequencies: Route frequencies, shape (batch_size, num_routes)
+            on_demand: Boolean indicating if route is flexible, shape (batch_size, num_routes)
+
+        Returns:
+            Route embeddings with shape (batch_size, num_routes, embedding_size + 2)
+        """
+        # 1. Create route position embeddings
+        num_routes = routes.shape[1]
+        route_positions = jnp.arange(num_routes)[None, :, None]  # Shape: (1, num_routes, 1)
+        route_position_embedding = hk.Linear(self.embedding_size)(
+            route_positions.astype(float)
+        )  # Shape: (1, num_routes, embedding_size)
+
+        # 2. Create route sequence embeddings
         route_mlp = hk.Sequential(
             [
                 hk.Linear(self.embedding_size),
@@ -136,17 +178,43 @@ class MandlTorso(hk.Module):
                 jnp.tanh,
             ]
         )
-        route_features = route_mlp(routes.astype(float))  # (batch_size, num_routes, embedding_size)
+        route_sequence_features = route_mlp(
+            routes.astype(float)
+        )  # (batch_size, num_routes, embedding_size)
 
-        # Add frequencies and on_demand as additional features
+        # 3. Create route type embeddings for fixed vs flexible routes
+        route_type_embedding = hk.Linear(self.embedding_size)(
+            on_demand[..., None].astype(float)
+        )  # Shape: (batch_size, num_routes, embedding_size)
+
+        # 4. Combine all embeddings
+        combined_route_embeddings = (
+            route_sequence_features  # Base sequence features
+            + route_position_embedding  # Position information
+            + route_type_embedding  # Route type (fixed/flexible)
+        )
+
+        # 5. Add frequencies and on_demand as additional features
         route_info = jnp.concatenate(
             [
-                route_features,  # (B, R, embedding_size)
-                frequencies[..., None],  # (B, R, 1)
-                on_demand[..., None].astype(float),  # (B, R, 1)
+                combined_route_embeddings,  # (batch_size, num_routes, embedding_size)
+                frequencies[..., None],  # (batch_size, num_routes, 1)
+                on_demand[..., None].astype(float),  # (batch_size, num_routes, 1)
             ],
             axis=-1,
-        )  # Result: (B, R, embedding_size + 2)
+        )  # Result: (batch_size, num_routes, embedding_size + 2)
+
+        # 6. Final route-specific MLP
+        final_mlp = hk.Sequential(
+            [
+                hk.Linear(self.embedding_size + 2),
+                jnp.tanh,
+            ]
+        )
+
+        # Reshape to apply final MLP
+        b, r, f = route_info.shape
+        route_info = final_mlp(route_info.reshape(-1, f)).reshape(b, r, -1)
 
         return route_info
 
@@ -214,10 +282,17 @@ def make_actor_critic_networks_mandl(
             slice_sizes=(all_logits.shape[0], mandl.num_flex_routes, all_logits.shape[2]),
         )  # Shape: (B, num_flex_routes, num_nodes+1)
 
-        # Scale logits (optional)
-        scaled_logits = 10 * jnp.tanh(flex_routes_logits)  # Keep batch dimension!
+        # Apply action mask before scaling
+        masked_logits = jnp.where(
+            obs.action_mask,  # Shape: (B, num_flex_routes, num_nodes+1)
+            flex_routes_logits,
+            -1e9,  # Large negative value for invalid actions
+        )
 
-        return scaled_logits  # Shape: (B, num_flex_routes, num_nodes+1)
+        # Scale masked logits
+        scaled_logits = 10 * jnp.tanh(masked_logits)
+
+        return scaled_logits
 
     def critic_fn(obs: Observation) -> chex.Array:
         torso = MandlTorso(

@@ -12,19 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright 2022 InstaDeep Ltd. All rights reerved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from dataclasses import replace
 
@@ -246,6 +233,239 @@ class TestMandlEnv(chex.TestCase):
     def test_reward_calculation_components(self) -> None:
         """Test reward calculation with three passengers"""
         env = Mandl(num_flex_routes=2, simulation_steps=1, waiting_penalty_factor=2.0)
+        key = jax.random.PRNGKey(0)
+
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
+
+        test_passengers = PassengerBatch(
+            ids=jnp.arange(3),
+            statuses=jnp.array([3, 2, 1]),
+            origins=jnp.array([0, 1, 5]),
+            destinations=jnp.array([1, 2, 6]),
+            departure_times=jnp.array([0.0, 0.0, 0.0]),
+            time_waiting=jnp.array([1.0, 1.0, 2.0]),
+            time_in_vehicle=jnp.array([2.0, 3.0, 0.0]),
+        )
+
+        state = replace(state, passengers=test_passengers)
+
+        # Take one step to reach terminal state
+        step = self.variant(env.step)
+        _, timestep = step(state, jnp.array([-1, -1]))
+
+        # Reward calculation: -(journey_times + waiting_penalty)
+        # passenger 0: 2 in vehicle, 1 waiting
+        # passenger 1: 4 in vehicle, 1 waiting
+        # passenger 2: 0 in vehicle, 3 waiting
+        # Journey times: waiting(2.0) + in_vehicle(6.0) = 8.0
+        # Waiting penalty: waiting(3.0) * factor(2.0) = 6.0
+        # Total = -(6.0 + 8.0) = -14.0
+        chex.assert_trees_all_close(timestep.reward, jnp.array(-14.0))
+
+
+class TestCederEnv(chex.TestCase):
+    def test_env_initialization(self) -> None:
+        """Test environment initialization and properties."""
+        env = Mandl(network_name="ceder1", num_flex_routes=2)
+        assert env.num_nodes == 15
+        assert env.num_flex_routes == 2
+        assert env.max_capacity == 40
+        assert env.simulation_steps == 60
+
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_reset(self) -> None:
+        """Test environment reset."""
+        env = Mandl(network_name="ceder1", num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+
+        reset = self.variant(env.reset)
+        state, timestep = reset(key)
+
+        # Check state components
+        assert isinstance(state, State)
+        assert state.current_time == 0
+
+        # Check routes initialization
+        fixed_routes = sum(~state.routes.on_demand)  # Count non-flexible routes
+        flex_routes = sum(state.routes.on_demand)  # Count flexible routes
+        assert fixed_routes == 2  # From solution file
+        assert flex_routes == env.num_flex_routes
+
+        # Check vehicles initialization
+        total_routes = len(state.routes.ids)
+        assert len(state.vehicles.ids) == total_routes
+        assert jnp.all(state.vehicles.capacities == env.max_capacity)
+
+    def test_action_space(self) -> None:
+        """Test action space properties."""
+        env = Mandl(network_name="ceder1", num_flex_routes=2)
+        assert env.action_spec.minimum == -1  # Allow wait action (-1)
+        assert env.action_spec.maximum == env.num_nodes - 1  # Node indices from 0 to num_nodes-1
+
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_step_wait_action(self) -> None:
+        """Test step function with wait action."""
+        env = Mandl(network_name="ceder1", num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
+
+        # Create wait action for all flexible routes
+        action = jnp.full((env.num_flex_routes,), -1)  # All wait actions are -1 now
+
+        new_state, _ = env.step(state, action)
+
+        # Check that flexible routes haven't changed
+        flex_routes_mask = state.routes.on_demand
+        assert jnp.array_equal(
+            state.routes.nodes[flex_routes_mask], new_state.routes.nodes[flex_routes_mask]
+        )
+
+        # Check time increment
+        assert new_state.current_time == state.current_time + 1
+
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_step_valid_node_action(self) -> None:
+        """Test step function with valid node addition."""
+        env = Mandl(network_name="ceder1", num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
+
+        # Add node 0 to first flexible route
+        action = jnp.array([0, env.num_nodes])  # First route: add node 0, Second route: wait
+        new_state, _ = env.step(state, action)
+
+        # Check that first flexible route has node 0
+        flex_routes_mask = state.routes.on_demand
+        flex_route_idx = jnp.where(flex_routes_mask)[0][0]
+        assert new_state.routes.nodes[flex_route_idx][0] == 0
+
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_invalid_action_shape(self) -> None:
+        """Test error handling for invalid action shape."""
+        env = Mandl(network_name="ceder1", num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
+
+        # Wrong shape action
+        invalid_action = jnp.array([0])  # Only one action when we need two
+
+        step = self.variant(env.step)
+        with pytest.raises(ValueError, match=r"Action must have shape"):
+            step(state, invalid_action)
+
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_passenger_status_transitions(self) -> None:
+        """Test that passenger statuses transition correctly through different states.
+
+        Tests four key scenarios:
+        1. Status 0 -> 1: Passenger becomes eligible but no vehicle available (should accumulate
+        waiting time)
+        2. Status 0 -> 1 -> 2: Passenger becomes eligible and gets immediate pickup (no
+        waiting time)
+        3. Status 2: Passenger in vehicle (should accumulate in-vehicle time)
+        4. Status 3: Completed passenger (should maintain status and times)
+        """
+        env = Mandl(network_name="ceder1", num_flex_routes=2, simulation_steps=10)
+        key = jax.random.PRNGKey(0)
+
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
+
+        # Set up test passengers
+        test_passengers = state.passengers._replace(
+            # Four test passengers for different scenarios
+            statuses=jnp.array([0, 0, 2, 3] + [0] * (len(state.passengers.statuses) - 4)),
+            departure_times=jnp.array(
+                [1.0, 1.0, 0.0, 0.0] + [100.0] * (len(state.passengers.departure_times) - 4)
+            ),
+            origins=jnp.array([0, 1, 2, 3] + [0] * (len(state.passengers.origins) - 4)),
+            destinations=jnp.array([1, 2, 3, 4] + [1] * (len(state.passengers.destinations) - 4)),
+            time_waiting=jnp.array(
+                [0.0, 0.0, 0.0, 2.0] + [0.0] * (len(state.passengers.time_waiting) - 4)
+            ),
+            time_in_vehicle=jnp.array(
+                [0.0, 0.0, 1.0, 3.0] + [0.0] * (len(state.passengers.time_in_vehicle) - 4)
+            ),
+        )
+
+        # Set up vehicles for testing immediate pickup
+        test_vehicles = state.vehicles._replace(
+            current_edges=jnp.array([[0, 1], [0, 0]] + [[0, 0]] * (len(state.vehicles.ids) - 2)),
+            passengers=jnp.full((len(state.vehicles.ids), env.max_capacity), -1),
+        )
+
+        # Set initial state
+        state = replace(
+            state, passengers=test_passengers, vehicles=test_vehicles, current_time=1
+        )  # Set time to when passengers become eligible
+
+        # Take a step
+        action = jnp.full((env.num_flex_routes,), -1)  # Wait action
+        step = self.variant(env.step)
+        new_state, _ = step(state, action)
+
+        # 1. Verify passenger that becomes eligible but no vehicle available
+        chex.assert_trees_all_equal(
+            new_state.passengers.statuses[0], 1
+        )  # Should transition to waiting
+        chex.assert_trees_all_equal(
+            new_state.passengers.time_waiting[0], 1.0
+        )  # Should accumulate waiting time
+
+        # 2. Verify passenger that gets immediate pickup
+        chex.assert_trees_all_equal(
+            new_state.passengers.statuses[1], 2
+        )  # Should transition to in-vehicle
+        chex.assert_trees_all_equal(
+            new_state.passengers.time_waiting[1], 0.0
+        )  # Should have no waiting time
+
+        # 3. Verify passenger in vehicle
+        chex.assert_trees_all_equal(new_state.passengers.statuses[2], 2)  # Should stay in-vehicle
+        chex.assert_trees_all_equal(
+            new_state.passengers.time_in_vehicle[2],
+            2.0,  # Previous time (1.0) + 1 timestep
+        )
+
+        # 4. Verify completed passenger
+        chex.assert_trees_all_equal(new_state.passengers.statuses[3], 3)  # Should stay completed
+        chex.assert_trees_all_equal(
+            new_state.passengers.time_waiting[3], 2.0
+        )  # Should maintain waiting time
+        chex.assert_trees_all_equal(
+            new_state.passengers.time_in_vehicle[3], 3.0
+        )  # Should maintain in-vehicle time
+
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_vehicle_movement(self) -> None:
+        """Test vehicle movement along routes."""
+        env = Mandl(network_name="ceder1", num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+        reset = self.variant(env.reset)
+        state, _ = reset(key)
+
+        # Record initial vehicle positions
+        initial_positions = state.vehicles.current_edges.copy()
+
+        # Step with wait action
+        action = jnp.full((env.num_flex_routes,), env.num_nodes)
+        step = self.variant(env.step)
+        new_state, _ = step(state, action)
+
+        # Check that some vehicles have moved
+        assert not jnp.array_equal(initial_positions, new_state.vehicles.current_edges)
+
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_reward_calculation_components(self) -> None:
+        """Test reward calculation with three passengers"""
+        env = Mandl(
+            network_name="ceder1", num_flex_routes=2, simulation_steps=1, waiting_penalty_factor=2.0
+        )
+
         key = jax.random.PRNGKey(0)
 
         reset = self.variant(env.reset)
@@ -1194,6 +1414,180 @@ class TestFindPaths(chex.TestCase):
             transfer_paths[0],
             jnp.array([0, 1, 1, 1.0, 10.0]),  # 2 (0->1) + 3 (1->2) + 5 (transfer penalty)
         )
+
+
+class TestUpdateFlexibleRoutes(chex.TestCase):
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_initial_route_creation(self) -> None:
+        """Test adding first node to an empty flexible route."""
+        # Load actual fixed routes from file
+        env = Mandl(num_flex_routes=1)
+        key = jax.random.PRNGKey(0)
+        state, _ = env.reset(key)
+
+        # Get number of fixed routes
+        num_fixed = len(state.routes.ids) - env.num_flex_routes
+
+        # Create test routes by replacing the flexible route portion
+        routes = state.routes._replace(
+            nodes=jnp.concatenate(
+                [
+                    state.routes.nodes[:num_fixed],  # Keep original fixed routes
+                    jnp.full((1, env.num_nodes), -1, dtype=int),  # Empty flexible route
+                ]
+            ),
+        )
+
+        _update_flexible_routes = self.variant(env._update_flexible_routes)
+
+        # Add node 0 to flexible route
+        action = jnp.array([0])
+        new_routes = _update_flexible_routes(routes, action, state.network.links)
+
+        # Check fixed routes weren't modified
+        assert jnp.array_equal(new_routes.nodes[:num_fixed], routes.nodes[:num_fixed])
+
+        # Check that node was added correctly to flexible route
+        expected_flex_route = jnp.full((env.num_nodes,), -1, dtype=int).at[0].set(0)
+        assert jnp.array_equal(new_routes.nodes[num_fixed], expected_flex_route)
+
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_append_valid_node(self) -> None:
+        """Test appending a valid node to existing flexible route."""
+        # Initialize environment with real fixed routes
+        env = Mandl(num_flex_routes=1)
+        key = jax.random.PRNGKey(0)
+        state, _ = env.reset(key)
+
+        num_fixed = len(state.routes.ids) - env.num_flex_routes
+
+        # Create test routes with one node in flexible route
+        initial_flex_route = jnp.full((env.num_nodes,), -1, dtype=int).at[0].set(0)
+        routes = state.routes._replace(
+            nodes=jnp.concatenate(
+                [
+                    state.routes.nodes[:num_fixed],
+                    initial_flex_route[None, :],  # Add batch dimension
+                ]
+            ),
+        )
+
+        _update_flexible_routes = self.variant(env._update_flexible_routes)
+
+        # Add node 1 to flexible route (assuming it's connected to node 0)
+        action = jnp.array([1])
+        new_routes = _update_flexible_routes(routes, action, state.network.links)
+
+        # Check fixed routes weren't modified
+        assert jnp.array_equal(new_routes.nodes[:num_fixed], routes.nodes[:num_fixed])
+
+        # Check that node was appended correctly
+        expected_flex_route = jnp.full((env.num_nodes,), -1, dtype=int)
+        expected_flex_route = expected_flex_route.at[0].set(0).at[1].set(1)
+        assert jnp.array_equal(new_routes.nodes[num_fixed], expected_flex_route)
+
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_wait_action(self) -> None:
+        """Test that wait action (-1) doesn't modify route."""
+        # Initialize environment with real fixed routes
+        env = Mandl(num_flex_routes=1)
+        key = jax.random.PRNGKey(0)
+        state, _ = env.reset(key)
+
+        num_fixed = len(state.routes.ids) - env.num_flex_routes
+
+        # Create test routes with existing flexible route
+        initial_flex_route = jnp.full((env.num_nodes,), -1, dtype=int)
+        initial_flex_route = initial_flex_route.at[0].set(0).at[1].set(1)
+        routes = state.routes._replace(
+            nodes=jnp.concatenate(
+                [
+                    state.routes.nodes[:num_fixed],
+                    initial_flex_route[None, :],
+                ]
+            ),
+        )
+
+        _update_flexible_routes = self.variant(env._update_flexible_routes)
+
+        # Wait action
+        action = jnp.array([-1])
+        new_routes = _update_flexible_routes(routes, action, state.network.links)
+
+        # Check that all routes remained unchanged
+        assert jnp.array_equal(new_routes.nodes, routes.nodes)
+
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_multiple_flexible_routes(self) -> None:
+        """Test updating multiple flexible routes simultaneously."""
+        # Initialize environment with real fixed routes
+        env = Mandl(num_flex_routes=2)
+        key = jax.random.PRNGKey(0)
+        state, _ = env.reset(key)
+
+        num_fixed = len(state.routes.ids) - env.num_flex_routes
+
+        # Create test routes with partially filled flexible routes
+        flex_route1 = jnp.full((env.num_nodes,), -1, dtype=int).at[0].set(0)
+        flex_route2 = jnp.full((env.num_nodes,), -1, dtype=int).at[0].set(1)
+
+        routes = state.routes._replace(
+            nodes=jnp.concatenate(
+                [
+                    state.routes.nodes[:num_fixed],
+                    flex_route1[None, :],
+                    flex_route2[None, :],
+                ]
+            ),
+        )
+
+        _update_flexible_routes = self.variant(env._update_flexible_routes)
+
+        # Add nodes to both flexible routes
+        action = jnp.array([1, 2])  # Add node 1 to first route, node 2 to second route
+        new_routes = _update_flexible_routes(routes, action, state.network.links)
+
+        # Check fixed routes weren't modified
+        assert jnp.array_equal(new_routes.nodes[:num_fixed], routes.nodes[:num_fixed])
+
+        # Check that nodes were added correctly to flexible routes
+        expected_flex_route1 = jnp.full((env.num_nodes,), -1, dtype=int)
+        expected_flex_route1 = expected_flex_route1.at[0].set(0).at[1].set(1)
+        assert jnp.array_equal(new_routes.nodes[num_fixed], expected_flex_route1)
+
+        expected_flex_route2 = jnp.full((env.num_nodes,), -1, dtype=int)
+        expected_flex_route2 = expected_flex_route2.at[0].set(1).at[1].set(2)
+        assert jnp.array_equal(new_routes.nodes[num_fixed + 1], expected_flex_route2)
+
+    @chex.variants(with_jit=True, without_jit=True)
+    def test_full_route(self) -> None:
+        """Test attempting to add a node to a full route."""
+        # Initialize environment with real fixed routes
+        env = Mandl(num_flex_routes=1)
+        key = jax.random.PRNGKey(0)
+        state, _ = env.reset(key)
+
+        num_fixed = len(state.routes.ids) - env.num_flex_routes
+
+        # Create a full flexible route (no -1s)
+        full_flex_route = jnp.arange(env.num_nodes)
+        routes = state.routes._replace(
+            nodes=jnp.concatenate(
+                [
+                    state.routes.nodes[:num_fixed],
+                    full_flex_route[None, :],
+                ]
+            ),
+        )
+
+        _update_flexible_routes = self.variant(env._update_flexible_routes)
+
+        # Try to add another node
+        action = jnp.array([0])
+        new_routes = _update_flexible_routes(routes, action, state.network.links)
+
+        # Check that route remained unchanged
+        assert jnp.array_equal(new_routes.nodes, routes.nodes)
 
 
 if __name__ == "__main__":

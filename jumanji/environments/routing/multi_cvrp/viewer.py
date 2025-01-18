@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from importlib import resources
 from itertools import groupby
 from typing import Callable, Optional, Sequence, Tuple
 
@@ -19,7 +20,6 @@ import chex
 import matplotlib.animation
 import matplotlib.pyplot as plt
 import numpy as np
-import pkg_resources
 from numpy.typing import NDArray
 
 import jumanji.environments
@@ -160,10 +160,10 @@ class MultiCVRPViewer(Viewer):
         ax.get_xaxis().set_visible(False)
         ax.get_yaxis().set_visible(False)
 
-        img_path = pkg_resources.resource_filename(
-            "jumanji", "environments/routing/multi_cvrp/img/city_map.jpeg"
-        )
-        map_img = plt.imread(img_path)
+        img_package = "jumanji.environments.routing.multi_cvrp.img"
+        img_file = "city_map.jpeg"
+        with resources.files(img_package).joinpath(img_file).open("rb") as f:
+            map_img = plt.imread(f)
         ax.imshow(map_img, extent=[0, 1, 0, 1])
 
     def _group_tour(self, tour: chex.Array) -> list:

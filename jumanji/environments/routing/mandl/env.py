@@ -14,14 +14,14 @@
 
 from dataclasses import replace
 from functools import cached_property
-from typing import Final, Optional, Sequence
+from importlib import resources
+from typing import Final, Literal, Optional, Sequence
 
 import chex
 import jax
 import jax.numpy as jnp
 import matplotlib
 import pandas as pd
-import pkg_resources
 from jax import random
 
 from jumanji import specs
@@ -47,19 +47,23 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
     def __init__(
         self,
         viewer: Optional[Viewer] = None,
+        network_name: Literal["mandl1", "ceder1"] = "ceder1",
         max_capacity: int = 40,
-        simulation_steps: int = 60,
-        num_flex_routes: int = 2,
-        waiting_penalty_factor: float = 2.0,
+        simulation_steps: int = 240,
+        num_flex_routes: int = 4,
+        waiting_penalty_factor: float = 10.0,
+        max_num_stops_flex: int = 20,
     ) -> None:
+        self.network_name: Final = network_name
         self.max_capacity: Final = max_capacity
         self.simulation_steps: Final = simulation_steps
         self.num_flex_routes: Final = num_flex_routes
         self.waiting_penalty_factor: Final = jnp.array(waiting_penalty_factor)
-        self.num_nodes: Final = 15
+        self.num_nodes: Final = {"mandl1": 15, "ceder1": 4}[network_name]
         self.max_num_routes: Final = 99
         self.max_demand: Final = 1024
         self.max_edge_weight: Final = 10
+        self.max_num_stops_flex = max_num_stops_flex
         self._viewer = viewer or MandlViewer(
             name="Mandl",
             render_mode="human",
@@ -84,10 +88,18 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         fixed_routes = self._load_fixed_routes()
         num_fixed_routes = len(fixed_routes.ids)
 
+        # Filter out routes with zero frequency
+        fixed_routes = RouteBatch(
+            ids=fixed_routes.ids,
+            nodes=jnp.where(fixed_routes.frequencies[:, None] > 0, fixed_routes.nodes, -1),
+            frequencies=fixed_routes.frequencies,
+            on_demand=fixed_routes.on_demand,
+        )
+
         # Initialize flexible routes (empty initially)
         flexible_routes = RouteBatch(
             ids=jnp.arange(num_fixed_routes, num_fixed_routes + self.num_flex_routes),
-            nodes=jnp.full((self.num_flex_routes, self.num_nodes), -1, dtype=int),
+            nodes=jnp.full((self.num_flex_routes, self.max_num_stops_flex), -1, dtype=int),
             frequencies=jnp.ones(self.num_flex_routes, dtype=int),
             on_demand=jnp.ones(self.num_flex_routes, dtype=bool),
         )
@@ -120,7 +132,8 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         )
 
         # Create initial timestep
-        timestep = restart(observation=self._state_to_observation(state))
+        metrics = self.get_metrics(state=state)
+        timestep = restart(observation=self._state_to_observation(state), extras=metrics)
 
         return state, timestep
 
@@ -129,23 +142,27 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
     ) -> tuple[NetworkData, jnp.ndarray]:
         """Load network and demand data from files.
 
+        Args:
+            network_name: Name of the network to load (e.g., "mandl1", "ceder1")
+
         Returns:
             NetworkData: Contains the network structure with nodes, links, and terminals
             demand: Matrix of shape (num_nodes, num_nodes) containing demand between nodes
         """
         # Load data from files
-        nodes_path = pkg_resources.resource_filename(
-            "jumanji", "environments/routing/mandl/mandl1_nodes.txt"
-        )
-        links_path = pkg_resources.resource_filename(
-            "jumanji", "environments/routing/mandl/mandl1_links.txt"
-        )
-        demand_path = pkg_resources.resource_filename(
-            "jumanji", "environments/routing/mandl/mandl1_demand.txt"
-        )
-        nodes_df = pd.read_csv(nodes_path)
-        links_df = pd.read_csv(links_path)
-        demand_df = pd.read_csv(demand_path)
+        assets_package = f"jumanji.environments.routing.mandl.assets.{self.network_name}"
+        nodes_file = f"{self.network_name}_nodes.txt"
+        links_file = f"{self.network_name}_links.txt"
+        demand_file = f"{self.network_name}_demand.txt"
+
+        with resources.files(assets_package).joinpath(nodes_file).open("r") as f:
+            nodes_df = pd.read_csv(f)
+
+        with resources.files(assets_package).joinpath(links_file).open("r") as f:
+            links_df = pd.read_csv(f)
+
+        with resources.files(assets_package).joinpath(demand_file).open("r") as f:
+            demand_df = pd.read_csv(f)
 
         # Process nodes
         nodes = jnp.array(nodes_df[["lat", "lon"]].values)
@@ -183,22 +200,11 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
     def _load_fixed_routes(
         self,
     ) -> RouteBatch:
-        """Load fixed routes from solution file.
+        """Load fixed routes from solution file."""
+        assets_package = f"jumanji.environments.routing.mandl.assets.{self.network_name}"
+        solution_file = f"{self.network_name}_solution.txt"
 
-        File format:
-        First line: Comment about max stops
-        Second line: Number of routes
-        Next N lines: Routes as node sequences separated by dashes
-        Last N lines: Frequencies for each route
-
-        Returns:
-            RouteBatch containing the fixed routes
-        """
-        path = pkg_resources.resource_filename(
-            "jumanji", "environments/routing/mandl/mandl1_solution.txt"
-        )
-
-        with open(path, "r") as f:
+        with resources.files(assets_package).joinpath(solution_file).open("r") as f:
             lines = f.readlines()
 
             # Skip comment line and read number of routes
@@ -218,9 +224,18 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             for line in lines[2 + num_routes : 2 + 2 * num_routes]:
                 frequencies.append(int(line.strip()))
 
+        if len(routes[0]) > self.max_num_stops_flex:
+            raise ValueError(f"Fixed routes exceed max_stops ({self.max_num_stops_flex})")
+
+        # Pad routes to max length
+        padded_routes = []
+        for route in routes:
+            padded_route = route + [-1] * (self.max_num_stops_flex - len(route))
+            padded_routes.append(padded_route)
+
         return RouteBatch(
             ids=jnp.arange(num_routes),
-            nodes=jnp.array(routes),
+            nodes=jnp.array(padded_routes),
             frequencies=jnp.array(frequencies),
             on_demand=jnp.zeros(num_routes, dtype=bool),  # Fixed routes are not on-demand
         )
@@ -248,19 +263,11 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         origins = jnp.tile(od_pairs_per_passenger[0], repeat_factor)[:n_passengers]
         destinations = jnp.tile(od_pairs_per_passenger[1], repeat_factor)[:n_passengers]
 
-        # Create validity mask
-        valid_mask = origins != destinations
-
         # Generate departure times
         key, departure_key = random.split(key)
         departure_times = random.uniform(
             departure_key, shape=(n_passengers,), minval=0, maxval=simulation_period
         )
-
-        # Apply mask to all arrays
-        origins = jnp.where(valid_mask, origins, 0)
-        destinations = jnp.where(valid_mask, destinations, 0)
-        departure_times = jnp.where(valid_mask, departure_times, 0.0)
 
         return PassengerBatch(
             ids=jnp.arange(n_passengers),
@@ -269,33 +276,21 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             departure_times=departure_times,
             time_waiting=jnp.zeros(n_passengers),
             time_in_vehicle=jnp.zeros(n_passengers),
-            statuses=jnp.where(valid_mask, 0, -1).astype(jnp.int32),  # -1 for invalid passengers
+            statuses=jnp.zeros(n_passengers),
         )
 
     def _init_vehicles(self, num_vehicles: int, max_route_length: int) -> VehicleBatch:
-        """Initialize vehicles at the start of the simulation.
-
-        Args:
-            num_vehicles: Total number of vehicles to initialize
-            max_route_length: Maximum length of a route (usually number of nodes)
-
-        Returns:
-            VehicleBatch: Initial state of all vehicles
-        """
+        """Initialize vehicles at the start of the simulation."""
         return VehicleBatch(
             ids=jnp.arange(num_vehicles),
-            route_ids=jnp.arange(num_vehicles),  # Each vehicle starts with unique route ID
-            current_edges=jnp.zeros(
-                (num_vehicles, 2), dtype=int
-            ),  # All vehicles start at edge (0,0)
-            times_on_edge=jnp.zeros(num_vehicles),  # No time spent on edges initially
-            passengers=jnp.full(
-                (num_vehicles, self.max_capacity), -1, dtype=int
-            ),  # No passengers initially (-1 represents empty seat)
-            capacities=jnp.full(
-                num_vehicles, self.max_capacity
-            ),  # All vehicles start with full capacity
-            directions=jnp.ones(num_vehicles, dtype=int),  # All vehicles start moving forward
+            route_ids=jnp.arange(num_vehicles),
+            current_edges=jnp.full(
+                (num_vehicles, 2), -1, dtype=int
+            ),  # Start with invalid edge (-1, -1) to indicate no route
+            times_on_edge=jnp.zeros(num_vehicles),
+            passengers=jnp.full((num_vehicles, self.max_capacity), -1, dtype=int),
+            capacities=jnp.full(num_vehicles, self.max_capacity),
+            directions=jnp.ones(num_vehicles, dtype=int),
         )
 
     def _state_to_observation(self, state: State) -> Observation:
@@ -310,6 +305,9 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         """
         # Extract required fields from state and transform as needed
         network_mask = state.network.links < jnp.inf  # Convert links to boolean adjacency matrix
+
+        # Calculate action mask for valid next stops
+        action_mask = self._get_action_mask(state)
 
         return Observation(
             network=network_mask,
@@ -329,6 +327,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             frequencies=state.routes.frequencies,
             on_demand=state.routes.on_demand,
             current_time=state.current_time,
+            action_mask=action_mask,
         )
 
     @profile_function
@@ -389,30 +388,63 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             )
 
             reward = -(journey_times + waiting_penalty)
-            return termination(observation=self._state_to_observation(new_state), reward=reward)
+            metrics = self.get_metrics(new_state)
+            return termination(
+                observation=self._state_to_observation(new_state), reward=reward, extras=metrics
+            )
 
         def create_transition_timestep(args: tuple[State, jnp.ndarray]) -> TimeStep[Observation]:
             new_state, _ = args
+            metrics = self.get_metrics(new_state)
             return transition(
                 observation=self._state_to_observation(new_state),
                 reward=jnp.array(0.0),
                 discount=jnp.array(1.0),
+                extras=metrics,
             )
 
         # Pass both new_state and waiting_penalty_factor to the conditional functions
         args = (new_state, self.waiting_penalty_factor)
         timestep = jax.lax.cond(done, create_done_timestep, create_transition_timestep, args)
 
+        # jax.debug.print("routes: {r}", r=state.routes)
+        # jax.debug.print("network: {n}", n=state.network)
+        # jax.debug.print("vehicles: {v}", v=state.vehicles)
         return new_state, timestep
 
     def get_metrics(self, state: State) -> dict[str, jnp.ndarray]:
+        # Get indices for fixed and flex routes
+        num_fixed_routes = len(state.routes.ids) - self.num_flex_routes
+
+        # Create route type masks for vehicles
+        vehicle_route_types = state.vehicles.route_ids < num_fixed_routes  # True for fixed routes
+
+        # Initialize passenger counters
+        def count_passengers_by_type(is_fixed: bool):
+            # Count in-vehicle passengers
+            def count_for_vehicle(acc, vehicle_idx):
+                is_vehicle_type = vehicle_route_types[vehicle_idx] == is_fixed
+                vehicle_passengers = state.vehicles.passengers[vehicle_idx]
+                valid_passengers = vehicle_passengers >= 0
+                return acc + jnp.sum(valid_passengers & is_vehicle_type)
+
+            return jax.lax.fori_loop(0, len(state.vehicles.ids), count_for_vehicle, 0)
+
+        # Count passengers by route type
+        passengers_in_fixed = count_passengers_by_type(True)
+        passengers_in_flex = count_passengers_by_type(False)
+
         metrics = {
-            # Remove .item() calls and keep values as JAX arrays
             "completed_passengers": jnp.sum(state.passengers.statuses == 3),
             "waiting_passengers": jnp.sum(state.passengers.statuses == 1),
             "in_vehicle_passengers": jnp.sum(state.passengers.statuses == 2),
+            "in_fixed_vehicles": passengers_in_fixed,
+            "in_flex_vehicles": passengers_in_flex,
             "total_waiting_time": jnp.sum(state.passengers.time_waiting),
             "total_in_vehicle_time": jnp.sum(state.passengers.time_in_vehicle),
+            "capacity_left": jnp.sum(state.vehicles.capacities),
+            "capacity_left_relative": jnp.sum(state.vehicles.capacities)
+            / (len(state.vehicles.ids) * self.max_capacity),
         }
 
         # Add route-related metrics
@@ -437,14 +469,27 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             all_idx = num_fixed_routes + i
             route = nodes[all_idx]
 
-            padding_mask = route == -1
-            cumsum_mask = jnp.cumsum(padding_mask)
-            empty_pos = jnp.argmax(cumsum_mask == 1)
+            # Find the first empty position (-1)
+            valid_mask = route != -1
+            empty_pos = jnp.argmin(valid_mask)
 
             new_node = action[i]
 
+            # Get previous node (if it exists)
+            prev_node = jnp.where(empty_pos > 0, route[empty_pos - 1], -1)
+
+            # Conditions for adding the new node:
+            # 1. New node is valid (>= 0)
+            # 2. New node is different from previous node
+            # 3. There is a valid connection in the network (if not first node)
+            valid_connection = jax.lax.cond(
+                prev_node >= 0, lambda: links[prev_node, new_node] < jnp.inf, lambda: True
+            )
+
+            can_add = (new_node >= 0) & (new_node != prev_node) & valid_connection
+
             return jax.lax.cond(
-                new_node >= 0,
+                can_add,
                 lambda: nodes.at[all_idx, empty_pos].set(new_node),
                 lambda: nodes,
             )
@@ -481,74 +526,84 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         directions = vehicles.directions
         route_ids = vehicles.route_ids
 
-        # Get travel times for all current edges
-        from_nodes = current_edges[:, 0]
-        to_nodes = current_edges[:, 1]
-        edge_times = network_links[from_nodes, to_nodes]
+        def process_vehicle(i: int, vehicles: VehicleBatch) -> VehicleBatch:
+            route = routes[route_ids[i]]
+            current_edge = current_edges[i]
 
-        # Create masks for vehicles that need to move
-        need_to_move = times_on_edge >= edge_times
+            # Count valid nodes (not -1)
+            route_length = jnp.sum(route != -1)
 
-        # Get current routes for all vehicles
-        valid_routes = routes[route_ids]
+            def handle_invalid_route():
+                # Find first valid node using argmax
+                first_valid_idx = jnp.argmax(route != -1)
+                first_valid_node = route[first_valid_idx]
 
-        # Find current positions in routes
-        valid_mask = valid_routes != -1
-        route_lengths = jnp.sum(valid_mask, axis=1)
-        current_positions = jnp.where(
-            (valid_routes == current_edges[:, 1:2]) & valid_mask,
-            jnp.arange(valid_routes.shape[1])[None, :],
-            -1,
-        ).max(axis=1)
+                # If route has at least one valid node, place vehicle there
+                return jax.lax.cond(
+                    route_length > 0,
+                    lambda: vehicles._replace(
+                        current_edges=vehicles.current_edges.at[i].set(
+                            jnp.array([first_valid_node, first_valid_node])
+                        )
+                    ),
+                    lambda: vehicles,  # Keep vehicle at invalid edge if no valid nodes
+                )
 
-        # Calculate next positions
-        next_positions = current_positions + directions
+            def process_valid_route():
+                # If vehicle is at invalid edge, initialize it at first node
+                def initialize_vehicle():
+                    first_valid_idx = jnp.argmax(route != -1)
+                    first_valid_node = route[first_valid_idx]
+                    return vehicles._replace(
+                        current_edges=vehicles.current_edges.at[i].set(
+                            jnp.array([first_valid_node, first_valid_node])
+                        ),
+                        times_on_edge=vehicles.times_on_edge.at[i].set(0),
+                    )
 
-        # Handle end conditions
-        at_end = next_positions >= route_lengths
-        at_start = next_positions < 0
+                # Normal movement logic for valid edges
+                def move_vehicle():
+                    # Find current position in route
+                    current_pos = jnp.argmax(route == current_edge[1])
 
-        # Update directions
-        new_directions = jnp.where(
-            at_end,
-            -1,  # reverse direction at end
-            jnp.where(
-                at_start,
-                1,  # forward direction at start
-                directions,  # keep current direction
-            ),
-        )
+                    next_pos = current_pos + directions[i]
 
-        # Adjust next positions based on direction changes
-        next_positions = jnp.where(
-            at_end,
-            route_lengths - 2,  # second-to-last position
-            jnp.where(
-                at_start,
-                1,  # second position
-                next_positions,
-            ),
-        )
+                    # Handle end conditions
+                    at_end = next_pos >= route_length
+                    at_start = next_pos < 0
 
-        # Get next nodes for vehicles that need to move
-        valid_nodes = jnp.where(valid_mask, valid_routes, -1)
-        next_nodes = jnp.take_along_axis(valid_nodes, next_positions[:, None], axis=1).squeeze()
+                    new_direction = jnp.where(at_end, -1, jnp.where(at_start, 1, directions[i]))
 
-        # Update vehicles that need to move
-        new_current_edges = jnp.where(
-            need_to_move[:, None],
-            jnp.stack([current_edges[:, 1], next_nodes], axis=1),
-            current_edges,
-        )
+                    next_pos = jnp.where(at_end, route_length - 2, jnp.where(at_start, 1, next_pos))
 
-        new_times_on_edge = jnp.where(need_to_move, 0, times_on_edge + 1)
+                    # Get next valid node by scanning through the route
+                    next_valid_count = jnp.sum(jnp.arange(len(route)) <= next_pos)
+                    next_node = jnp.where(route != -1, route, -1)[next_valid_count - 1]
 
-        # Create new vehicle batch with updated values
-        return vehicles._replace(
-            current_edges=new_current_edges,
-            times_on_edge=new_times_on_edge,
-            directions=new_directions,
-        )
+                    edge_time = network_links[current_edge[1], next_node]
+
+                    return jax.lax.cond(
+                        times_on_edge[i] >= edge_time,
+                        lambda: vehicles._replace(
+                            current_edges=vehicles.current_edges.at[i].set(
+                                jnp.array([current_edge[1], next_node])
+                            ),
+                            times_on_edge=vehicles.times_on_edge.at[i].set(0),
+                            directions=vehicles.directions.at[i].set(new_direction),
+                        ),
+                        lambda: vehicles._replace(
+                            times_on_edge=vehicles.times_on_edge.at[i].set(times_on_edge[i] + 1)
+                        ),
+                    )
+
+                # Check if vehicle needs initialization
+                return jax.lax.cond(current_edge[0] == -1, initialize_vehicle, move_vehicle)
+
+            # Check if route has enough nodes for movement
+            return jax.lax.cond(route_length > 1, process_valid_route, handle_invalid_route)
+
+        # Process each vehicle
+        return jax.lax.fori_loop(0, len(vehicles.ids), process_vehicle, vehicles)
 
     def _update_vehicle_position(
         self,
@@ -610,127 +665,97 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         network: NetworkData,
         current_time: int,
     ) -> tuple[PassengerBatch, VehicleBatch]:
-        """Update passenger statuses and handle vehicle assignments in one pass.
-
-        Order of operations:
-        1. Update not-in-system to waiting (0 -> 1) based on departure time
-        2. Process immediate pickups for newly waiting passengers
-        3. Update waiting/in-vehicle times for remaining passengers
-        4. Process completed journeys
-        """
-        # 1. Update not-in-system to waiting based on departure time (0 -> 1)
-        new_statuses = jnp.where(
-            (passengers.statuses == 0) & (passengers.departure_times <= current_time),
-            1,
-            passengers.statuses,
+        # Update waiting/in-vehicle times
+        new_time_waiting = jnp.where(
+            passengers.statuses == 1, passengers.time_waiting + 1, passengers.time_waiting
         )
-        passengers = passengers._replace(statuses=new_statuses)
+        new_time_in_vehicle = jnp.where(
+            passengers.statuses == 2, passengers.time_in_vehicle + 1, passengers.time_in_vehicle
+        )
 
-        # 2. Process vehicle assignments and immediate pickups
-        vehicle_positions = vehicles.current_edges[:, 1]
-        available_seats = jnp.sum(vehicles.passengers == -1, axis=1)
+        n_passengers = len(passengers.ids)
+        n_vehicles = len(vehicles.ids)
+        capacity = vehicles.passengers.shape[1]
 
-        # Pre-compute valid passenger mask for efficiency
-        waiting_mask = passengers.statuses == 1
+        # Track passenger locations
+        passenger_location = jnp.full((n_passengers,), -1, dtype=jnp.int32)
 
-        def compute_assignment_costs(p_idx: int) -> jnp.ndarray:
-            """Compute costs for assigning a passenger to all vehicles."""
-            origin = passengers.origins[p_idx]
-            dest = passengers.destinations[p_idx]
-            is_waiting = waiting_mask[p_idx]
+        def update_passenger_locations(vehicle_idx, locations):
+            vehicle_passengers = vehicles.passengers[vehicle_idx]
+            vehicle_node = vehicles.current_edges[vehicle_idx, 1]
 
-            def compute_vehicle_cost(v_idx: int) -> jnp.ndarray:
-                vehicle_pos = vehicle_positions[v_idx]
-                has_capacity = available_seats[v_idx] > 0
-                is_at_origin = vehicle_pos == origin
+            def update_location(p_idx, locs):
+                passenger_id = vehicle_passengers[p_idx]
+                return jnp.where(passenger_id >= 0, locs.at[passenger_id].set(vehicle_node), locs)
 
-                # Only consider immediate pickup when vehicle is at passenger's origin
-                valid_assignment = jnp.logical_and(
-                    jnp.logical_and(is_waiting, has_capacity), is_at_origin
+            return jax.lax.fori_loop(0, capacity, update_location, locations)
+
+        # Update locations for all vehicles
+        passenger_location = jax.lax.fori_loop(
+            0, n_vehicles, update_passenger_locations, passenger_location
+        )
+
+        # Initialize new statuses with current values
+        new_statuses = passengers.statuses
+        new_vehicles = vehicles
+
+        def process_vehicle(vehicle_idx, state):
+            cur_statuses, cur_vehicles = state
+            vehicle_node = cur_vehicles.current_edges[vehicle_idx, 1]
+            vehicle_passengers = cur_vehicles.passengers[vehicle_idx]
+
+            def process_waiting_passenger(p_idx, state):
+                p_status, v_passengers = state
+
+                is_waiting = p_status[p_idx] == 1
+                is_at_node = passengers.origins[p_idx] == vehicle_node
+                has_space = jnp.sum(v_passengers < 0) > 0
+
+                empty_seats = jnp.where(v_passengers < 0, jnp.arange(capacity), capacity)
+                first_empty = jnp.min(empty_seats)
+
+                can_board = is_waiting * is_at_node * has_space * (first_empty < capacity)
+
+                new_p_status = jnp.where(can_board, 2, p_status[p_idx])
+                new_v_passengers = jnp.where(
+                    can_board, v_passengers.at[first_empty].set(p_idx), v_passengers
                 )
 
-                # Route-based path costs
-                route_idx = vehicles.route_ids[v_idx]
-                route_paths = Mandl._get_route_shortest_paths(network, routes.nodes[route_idx])
-                delivery_cost = route_paths[origin, dest]
+                return p_status.at[p_idx].set(new_p_status), new_v_passengers
 
-                return jnp.where(valid_assignment, delivery_cost, jnp.inf)
+            final_status, final_passengers = jax.lax.fori_loop(
+                0, n_passengers, process_waiting_passenger, (cur_statuses, vehicle_passengers)
+            )
 
-            return jax.vmap(compute_vehicle_cost)(jnp.arange(len(vehicles.ids)))
+            new_vehicles = cur_vehicles._replace(
+                passengers=cur_vehicles.passengers.at[vehicle_idx].set(final_passengers)
+            )
 
-        # Compute all assignment costs
-        all_costs = jax.vmap(compute_assignment_costs)(jnp.arange(len(passengers.ids)))
-        best_vehicles = jnp.argmin(all_costs, axis=1)
-        min_costs = jnp.min(all_costs, axis=1)
+            return final_status, new_vehicles
 
-        def process_assignment(
-            state: tuple[PassengerBatch, VehicleBatch], idxs: tuple[int, int, float]
-        ) -> tuple[tuple[PassengerBatch, VehicleBatch], None]:
-            curr_passengers, curr_vehicles = state
-            p_idx, v_idx, cost = idxs
-
-            def assign() -> tuple[PassengerBatch, VehicleBatch]:
-                # Find first empty seat using integer indexing
-                assert isinstance(v_idx, jnp.ndarray)
-                assert isinstance(p_idx, jnp.ndarray)
-                v_idx_int = v_idx.astype(jnp.int32)
-                empty_seat = jnp.argmax(curr_vehicles.passengers[v_idx_int] == -1)
-                p_idx_int = p_idx.astype(jnp.int32)
-
-                # Update passenger status to in-vehicle (1 -> 2)
-                new_passengers = curr_passengers._replace(
-                    statuses=curr_passengers.statuses.at[p_idx_int].set(2)
-                )
-
-                # Assign passenger to vehicle
-                new_vehicles = curr_vehicles._replace(
-                    passengers=curr_vehicles.passengers.at[v_idx_int, empty_seat].set(p_idx_int)
-                )
-
-                return new_passengers, new_vehicles
-
-            return jax.lax.cond(
-                cost < jnp.inf, lambda _: assign(), lambda _: (curr_passengers, curr_vehicles), None
-            ), None
-
-        # Process assignments
-        assignments = jnp.stack(
-            [
-                jnp.arange(len(passengers.ids), dtype=jnp.int32),
-                best_vehicles.astype(jnp.int32),
-                min_costs,
-            ],
-            axis=1,
-        )
-        sorted_indices = jnp.argsort(assignments[:, 2])
-        sorted_assignments = assignments[sorted_indices]
-
-        (passengers, vehicles), _ = jax.lax.scan(
-            process_assignment, (passengers, vehicles), sorted_assignments
+        final_statuses, final_vehicles = jax.lax.fori_loop(
+            0, n_vehicles, process_vehicle, (new_statuses, new_vehicles)
         )
 
-        # 3. Update accumulated times for passengers who weren't picked up immediately
-        passengers = passengers._replace(
-            time_waiting=jnp.where(
-                passengers.statuses == 1,  # Still waiting after pickup attempts
-                passengers.time_waiting + 1.0,
-                passengers.time_waiting,
-            ),
-            time_in_vehicle=jnp.where(
-                passengers.statuses == 2,  # In vehicle
-                passengers.time_in_vehicle + 1.0,
-                passengers.time_in_vehicle,
-            ),
+        # Update completed journeys
+        final_statuses = jnp.where(
+            (final_statuses == 2) & (passenger_location == passengers.destinations),
+            3,  # completed
+            final_statuses,
         )
 
-        # 4. Process completed journeys (2 -> 3)
-        def process_completions(
-            state: tuple[PassengerBatch, VehicleBatch],
-        ) -> tuple[PassengerBatch, VehicleBatch]:
-            # ... (rest of the completion processing remains the same)
-            return state
+        # Create updated passenger batch
+        updated_passengers = PassengerBatch(
+            ids=passengers.ids,
+            origins=passengers.origins,
+            destinations=passengers.destinations,
+            departure_times=passengers.departure_times,
+            time_waiting=new_time_waiting,
+            time_in_vehicle=new_time_in_vehicle,
+            statuses=final_statuses,
+        )
 
-        return process_completions((passengers, vehicles))
+        return updated_passengers, final_vehicles
 
     @cached_property
     def observation_spec(self) -> specs.Spec[Observation]:
@@ -760,7 +785,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 name="travel_times",
             ),
             routes=specs.BoundedArray(
-                shape=(max_num_routes, num_nodes),
+                shape=(max_num_routes, self.max_num_stops_flex),
                 dtype=int,
                 minimum=-1,
                 maximum=num_nodes - 1,
@@ -862,6 +887,13 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 maximum=self.simulation_steps,
                 name="current_time",
             ),
+            action_mask=specs.BoundedArray(
+                shape=(self.num_flex_routes, self.num_nodes + 1),  # +1 for wait action
+                dtype=bool,
+                minimum=False,
+                maximum=True,
+                name="action_mask",
+            ),
         )
 
     @cached_property
@@ -896,30 +928,39 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         if self._viewer is not None:
             self._viewer.close()
 
-    def _get_action_mask(
-        self, routes: jnp.ndarray, action_space: jnp.ndarray, network: jnp.ndarray
-    ) -> jnp.ndarray:
-        """Return a mask that indicates which nodes should not be considered for next steps.
+    def _get_action_mask(self, state: State) -> jnp.ndarray:
+        """Get mask for valid actions in current state."""
+        num_fixed_routes = len(state.routes.ids) - self.num_flex_routes
 
-        Returns:
-            Boolean mask of shape (num_routes, num_nodes+1) with True indicating valid actions
-            Note: For each route, the wait action (-1) is always valid
-        """
+        def get_route_mask(i: int) -> jnp.ndarray:
+            route = state.routes.nodes[num_fixed_routes + i]
 
-        def _body_fun(i: int, val: jnp.ndarray) -> jnp.ndarray:
-            # Get mask for node selections
-            node_mask = jnp.where(
-                jnp.any(routes[i] != -1),
-                self._get_mask_per_route(network, routes[i]),
-                jnp.zeros_like(routes[i], jnp.bool),
+            # Find the first empty position (-1)
+            valid_mask = route != -1
+            empty_pos = jnp.argmin(valid_mask)
+
+            # Get previous node (if it exists)
+            prev_node = jnp.where(empty_pos > 0, route[empty_pos - 1], -1)
+
+            def mask_if_has_prev_node(prev_node):
+                return state.network.links[prev_node] < jnp.inf
+
+            def mask_if_empty():
+                # Can add any node as first stop
+                return jnp.ones(self.num_nodes, dtype=bool)
+
+            route_mask = jax.lax.cond(
+                prev_node >= 0,
+                mask_if_has_prev_node,
+                lambda _: mask_if_empty(),
+                prev_node,
             )
-            # Add wait action (always valid)
-            full_mask = jnp.concatenate([jnp.array([True]), node_mask])
-            return val.at[i].set(full_mask)
 
-        return jax.lax.fori_loop(
-            0, routes.shape[0], _body_fun, jnp.zeros_like(action_space, jnp.bool)
-        )
+            # Wait action (-1) is always valid
+            return jnp.concatenate([jnp.array([True]), route_mask])
+
+        masks = jax.vmap(get_route_mask)(jnp.arange(self.num_flex_routes))
+        return masks
 
     def _get_mask_per_route(self, network: jnp.ndarray, route: jnp.ndarray) -> jnp.ndarray:
         """Get mask for valid next nodes for a given route.
