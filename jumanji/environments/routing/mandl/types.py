@@ -15,6 +15,7 @@
 from enum import IntEnum
 from typing import TYPE_CHECKING
 
+import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from jumanji.types import TimeStep
@@ -50,10 +51,19 @@ class NetworkData:
     """
 
     node_coordinates: Float[Array, " num_nodes 2"]
-    travel_times: Int[Array, " num_nodes num_nodes"]
+    travel_times: Float[Array, " num_nodes num_nodes"]
     is_terminal: Bool[Array, " num_nodes"]
 
-    def is_connected(self, from_node: int, to_node: int) -> bool:
+    def __post_init__(self) -> None:
+        # Data validation
+        if not jnp.all(self.travel_times >= 0):
+            raise ValueError("travel_times must contain non-negative values")
+        if not jnp.all(jnp.diag(self.travel_times) == 0):
+            raise ValueError("Diagonal elements of travel_times must be zero (self-connections)")
+        if not jnp.all(jnp.isfinite(self.node_coordinates)):
+            raise ValueError("node_coordinates must contain finite values")
+
+    def is_connected(self, from_node: Int[Array, ""], to_node: Int[Array, ""]) -> Bool[Array, ""]:
         """
         Check if two nodes are directly connected.
 
@@ -64,9 +74,12 @@ class NetworkData:
         Returns:
             True if nodes are connected, False otherwise.
         """
-        raise NotImplementedError
+        travel_time = self.travel_times[from_node, to_node]
+        return jnp.isfinite(travel_time)
 
-    def get_travel_time(self, from_node: int, to_node: int) -> int:
+    def get_travel_time(
+        self, from_node: Int[Array, ""], to_node: Int[Array, ""]
+    ) -> Float[Array, ""]:
         """
         Get the travel time between two nodes.
 
@@ -77,7 +90,7 @@ class NetworkData:
         Returns:
             Travel time between the nodes.
         """
-        raise NotImplementedError
+        return self.travel_times[from_node, to_node]
 
 
 @dataclass
@@ -131,7 +144,7 @@ class Fleet:
     ids: Int[Array, " num_vehicles"]
     route_ids: Int[Array, " num_vehicles"]
     current_edges: Int[Array, " num_vehicles 2"]
-    times_on_edge: Int[Array, " num_vehicles"]
+    times_on_edge: Float[Array, " num_vehicles"]
     passengers: Int[Array, " num_vehicles max_capacity"]
     directions: Int[Array, " num_vehicles"]
 
@@ -174,9 +187,9 @@ class PassengerState:
     ids: Int[Array, " num_passengers"]
     origins: Int[Array, " num_passengers"]
     destinations: Int[Array, " num_passengers"]
-    departure_times: Int[Array, " num_passengers"]
-    time_waiting: Int[Array, " num_passengers"]
-    time_in_vehicle: Int[Array, " num_passengers"]
+    departure_times: Float[Array, " num_passengers"]
+    time_waiting: Float[Array, " num_passengers"]
+    time_in_vehicle: Float[Array, " num_passengers"]
     statuses: Int[Array, " num_passengers"]  # dtype: PassengerStatus
 
     def update_passengers(self, current_time: int) -> "PassengerState":
@@ -220,7 +233,7 @@ class State:
     fleet: "Fleet"
     passenger_state: "PassengerState"
     routes: "RouteBatch"
-    current_time: int
+    current_time: Float
     key: PRNGKeyArray
 
     def step(self, actions: Int[Array, " ..."]) -> tuple["State", "TimeStep"]:
@@ -258,7 +271,7 @@ class Observation:
     routes: "RouteBatch"
     fleet_positions: Float[Array, " num_vehicles 2"]
     passenger_statuses: Int[Array, " num_passengers"]
-    current_time: int
+    current_time: float
     action_mask: Bool[Array, " num_flexible_routes num_nodes+1"]
 
     def get_action_mask(
