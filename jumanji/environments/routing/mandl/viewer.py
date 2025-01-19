@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Sequence
+from typing import Optional
 
 import matplotlib.animation
 import numpy as np
+from beartype.typing import Sequence
 
 from jumanji.environments.routing.mandl.types import State
 from jumanji.viewer import Viewer

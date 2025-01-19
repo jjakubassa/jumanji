@@ -13,10 +13,11 @@
 # limitations under the License.
 
 from functools import cached_property
-from typing import Final, Literal, Optional, Sequence
+from typing import Final, Literal, Optional
 
 import chex
 import matplotlib
+from beartype.typing import Sequence
 
 from jumanji import specs
 from jumanji.env import Environment
