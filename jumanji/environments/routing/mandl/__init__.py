@@ -14,8 +14,25 @@
 
 from jumanji.environments.routing.mandl.env import Mandl
 from jumanji.environments.routing.mandl.types import (
+    Fleet,
+    Metrics,
+    NetworkData,
     Observation,
+    PassengerState,
+    PassengerStatus,
+    RouteBatch,
+    RouteType,
     State,
 )
 
-__all__ = ["Mandl", "Observation", "State"]
+__all__ = [
+    "Fleet",
+    "Metrics",
+    "NetworkData",
+    "Observation",
+    "PassengerState",
+    "PassengerStatus",
+    "RouteBatch",
+    "RouteType",
+    "State",
+]
