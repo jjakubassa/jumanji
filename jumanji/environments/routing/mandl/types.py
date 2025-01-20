@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import replace
 from enum import IntEnum
 from typing import TYPE_CHECKING
 
@@ -24,7 +25,6 @@ if TYPE_CHECKING:  # https://github.com/python/mypy/issues/6239
     from dataclasses import dataclass
 else:
     from chex import dataclass
-
 # ruff: noqa: F722
 
 
@@ -99,19 +99,17 @@ class RouteBatch:
     Represents a collection of routes.
     """
 
-    ids: Int[Array, " num_routes"]  # unique
-    types: Int[Array, " num_routes"]  # dtype: RouteType
-    stops: Int[Array, " num_routes max_route_length"]
-    frequencies: Float[Array, " num_routes"]
-    on_demand: Bool[Array, " num_routes"]
+    ids: Int[Array, " {self.num_flex_routes}+{self.num_fix_routes}"]  # unique
+    types: Int[Array, " {self.num_flex_routes}+{self.num_fix_routes}"]  # dtype: RouteType
+    stops: Int[Array, "{self.num_flex_routes}+{self.num_fix_routes} max_route_length"]
+    frequencies: Float[Array, " {self.num_flex_routes}+{self.num_fix_routes}"]
+    on_demand: Bool[Array, " {self.num_flex_routes}+{self.num_fix_routes}"]
+    num_flex_routes: int
+    num_fix_routes: int
 
     @property
-    def num_on_demand_routes(self) -> Int[Array, ""]:
-        raise NotImplementedError
-
-    @property
-    def num_fixed_routes(self) -> Int[Array, ""]:
-        raise NotImplementedError
+    def num_routes(self) -> Int[Array, ""]:
+        return jnp.array(len(self.ids))
 
     def get_valid_stops(self) -> Bool[Array, " num_routes max_route_length"]:
         """
@@ -120,19 +118,19 @@ class RouteBatch:
         Returns:
             Boolean array of shape (num_routes, max_route_length) indicating valid stops.
         """
-        raise NotImplementedError
+        return self.stops != -1
 
-    def update_routes(self, actions: Int[Array, " num_on_demand_routes"]) -> "RouteBatch":
+    def update_routes(self, actions: Int[Array, " num_flex_routes"]) -> "RouteBatch":
         """
         Update flexible routes based on agent actions.
 
         Args:
-            actions: Array of actions for flexible routes.
-
-        Returns:
-            Updated RouteBatch instance.
+            actions: Array of actions for flexible routes (shape: (num_flexible_routes,))
         """
-        raise NotImplementedError
+        flex_indices = jnp.where(self.types == RouteType.FLEXIBLE, size=self.num_flex_routes)
+        next_free_stop = (self.stops[flex_indices] != -1).argmax(axis=1)
+        new_stops = self.stops.at[flex_indices, next_free_stop].set(actions)
+        return replace(self, stops=new_stops)
 
 
 @dataclass
