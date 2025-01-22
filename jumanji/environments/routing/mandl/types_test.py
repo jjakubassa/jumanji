@@ -18,7 +18,7 @@ import pytest
 from jax import jit
 from jaxtyping import TypeCheckError
 
-from jumanji.environments.routing.mandl.types import NetworkData, RouteBatch, RouteType
+from jumanji.environments.routing.mandl.types import Fleet, NetworkData, RouteBatch, RouteType
 
 
 class TestNetworkData:
@@ -132,7 +132,6 @@ class TestRouteBatch:
     def all_on_demand_routes(self) -> RouteBatch:
         num_routes = 5
         return RouteBatch(
-            ids=jnp.arange(num_routes),
             types=jnp.full(num_routes, RouteType.FLEXIBLE.value),
             stops=jnp.zeros((num_routes, 10), dtype=int),  # assuming max_route_length=10
             frequencies=jnp.ones(num_routes),
@@ -145,7 +144,6 @@ class TestRouteBatch:
     def no_on_demand_routes(self) -> RouteBatch:
         num_routes = 5
         return RouteBatch(
-            ids=jnp.arange(num_routes),
             types=jnp.full(num_routes, RouteType.FIXED.value),
             stops=jnp.zeros((num_routes, 10), dtype=int),
             frequencies=jnp.ones(num_routes),
@@ -158,7 +156,6 @@ class TestRouteBatch:
     def mixed_routes(self) -> RouteBatch:
         num_routes = 5
         return RouteBatch(
-            ids=jnp.arange(num_routes),
             types=jnp.array(
                 [
                     RouteType.FIXED.value,
@@ -227,3 +224,197 @@ class TestRouteBatch:
         update_routes = jit(no_on_demand_routes.update_routes)
         updated_batch = update_routes(actions)
         chex.assert_trees_all_equal(updated_batch, no_on_demand_routes)
+
+
+class TestFleet:
+    @pytest.fixture
+    def fully_occupied_fleet(self) -> Fleet:
+        return Fleet(
+            route_ids=jnp.array([0], dtype=int),
+            current_edges=jnp.array([[0, 1]], dtype=int),
+            current_edges_indices=jnp.array([0], dtype=int),
+            times_on_edge=jnp.array([15.0], dtype=float),
+            passengers=jnp.array([[1, 2, 3, 4, 5]], dtype=int),  # max_capacity=5
+            directions=jnp.array([0], dtype=int),
+        )
+
+    @pytest.fixture
+    def partially_occupied_fleet(self) -> Fleet:
+        return Fleet(
+            route_ids=jnp.array([0, 1], dtype=int),
+            current_edges=jnp.array([[0, 1], [1, 2]], dtype=int),
+            current_edges_indices=jnp.array([0, 1], dtype=int),
+            times_on_edge=jnp.array([10.0, 20.0], dtype=float),
+            passengers=jnp.array(
+                [
+                    [1, -1, -1, -1, -1],  # 1 passenger
+                    [2, 3, -1, -1, -1],  # 2 passengers
+                ],
+                dtype=int,
+            ),
+            directions=jnp.array([0, 1], dtype=int),
+        )
+
+    @pytest.fixture
+    def mixed_fleet(self) -> Fleet:
+        return Fleet(
+            route_ids=jnp.array([0, 1, 2], dtype=int),
+            current_edges=jnp.array([[0, 1], [1, 2], [2, 3]], dtype=int),
+            current_edges_indices=jnp.array([0, 1, 2], dtype=int),
+            times_on_edge=jnp.array([10.0, 20.0, 30.0], dtype=float),
+            passengers=jnp.array(
+                [
+                    [1, 2, -1, -1, -1],
+                    [-1, -1, -1, -1, -1],
+                    [3, 4, 5, 6, 7],
+                ],
+                dtype=int,
+            ),
+            directions=jnp.array([0, 1, 0], dtype=int),
+        )
+
+    def test_capacities_left_fully_occupied(self, fully_occupied_fleet: Fleet) -> None:
+        capacities_left = fully_occupied_fleet.capacities_left
+        chex.assert_trees_all_equal(capacities_left, jnp.array([0], dtype=int))
+
+    def test_capacities_left_partially_occupied(self, partially_occupied_fleet: Fleet) -> None:
+        capacities_left = partially_occupied_fleet.capacities_left
+        chex.assert_trees_all_equal(capacities_left, jnp.array([4, 3], dtype=int))
+
+    def test_capacities_left_mixed_fleet(self, mixed_fleet: Fleet) -> None:
+        capacities_left = mixed_fleet.capacities_left
+        chex.assert_trees_all_equal(capacities_left, jnp.array([3, 5, 0], dtype=int))
+
+    def test_seat_is_available_fully_occupied(self, fully_occupied_fleet: Fleet) -> None:
+        seat_available = fully_occupied_fleet.seat_is_available
+        chex.assert_trees_all_equal(seat_available, jnp.array([False], dtype=int))
+
+    def test_seat_is_available_partially_occupied(self, partially_occupied_fleet: Fleet) -> None:
+        seat_available = partially_occupied_fleet.seat_is_available
+        chex.assert_trees_all_equal(seat_available, jnp.array([True, True], dtype=int))
+
+    def test_seat_is_available_mixed_fleet(self, mixed_fleet: Fleet) -> None:
+        seat_available = mixed_fleet.seat_is_available
+        chex.assert_trees_all_equal(seat_available, jnp.array([True, True, False], dtype=int))
+
+    @pytest.mark.skip
+    def test_invalid_passenger_ids(self) -> None:
+        raise NotImplementedError
+
+    @pytest.mark.skip
+    def test_fleet_with_no_passengers(self, no_passengers_fleet: Fleet) -> None:
+        raise NotImplementedError
+
+    def test_fleet_with_max_passengers(self, fully_occupied_fleet: Fleet) -> None:
+        """Fleet where passenger slots are filled to maximum capacity."""
+        capacities_left = fully_occupied_fleet.capacities_left
+        chex.assert_trees_all_equal(capacities_left, jnp.array([0], dtype=int))
+
+        seat_available = fully_occupied_fleet.seat_is_available
+        chex.assert_trees_all_equal(seat_available, jnp.array([False], dtype=bool))
+
+    def test_add_passenger_success(self, mixed_fleet: Fleet) -> None:
+        """
+        Test adding a passenger to a vehicle with available seats.
+        """
+        # Vehicle 0 has passengers [1, 2, -1, -1, -1], so first available seat is index 2
+        add_passenger = jit(mixed_fleet.add_passenger)
+        updated_fleet = add_passenger(vehicle_id=0, passenger_id=10)
+        expected_passengers = jnp.array(
+            [
+                [1, 2, 10, -1, -1],
+                [-1, -1, -1, -1, -1],
+                [3, 4, 5, 6, 7],
+            ],
+            dtype=int,
+        )
+        chex.assert_trees_all_equal(updated_fleet.passengers, expected_passengers)
+
+    @pytest.mark.skip
+    def test_add_passenger_to_full_vehicle(self, mixed_fleet: Fleet) -> None:
+        """
+        Test adding a passenger to a fully occupied vehicle should raise an error.
+        """
+        raise NotImplementedError
+
+    @pytest.mark.skip
+    def test_add_passenger_invalid_vehicle_id(self, mixed_fleet: Fleet) -> None:
+        """
+        Test adding a passenger to an invalid vehicle ID should raise an error.
+        """
+        raise NotImplementedError
+
+    def test_remove_passenger_success(self, mixed_fleet: Fleet) -> None:
+        """
+        Test removing a passenger from a vehicle where the passenger exists.
+        """
+        # Remove passenger 4 from vehicle 2
+        remove_passenger = jit(mixed_fleet.remove_passenger)
+        updated_fleet = remove_passenger(vehicle_id=2, passenger_id=4)
+        expected_passengers = jnp.array(
+            [
+                [1, 2, -1, -1, -1],
+                [-1, -1, -1, -1, -1],
+                [3, -1, 5, 6, 7],  # Passenger 4 removed
+            ],
+            dtype=int,
+        )
+        chex.assert_trees_all_equal(updated_fleet.passengers, expected_passengers)
+
+    @pytest.mark.skip
+    def test_remove_passenger_not_found(self, mixed_fleet: Fleet) -> None:
+        """
+        Test removing a passenger who is not in the specified vehicle should raise an error.
+        """
+        raise NotImplementedError
+
+    @pytest.mark.skip
+    def test_remove_passenger_invalid_vehicle_id(self, mixed_fleet: Fleet) -> None:
+        """
+        Test removing a passenger from an invalid vehicle ID should raise an error.
+        """
+        raise NotImplementedError
+
+    def test_add_and_remove_passenger_sequence(self, mixed_fleet: Fleet) -> None:
+        """
+        Test the sequence of adding a passenger and then removing them to ensure consistency.
+        """
+        # Add passenger 10 to vehicle 0
+        add_passenger = jit(mixed_fleet.add_passenger)
+        fleet_after_add = add_passenger(vehicle_id=0, passenger_id=10)
+        expected_after_add = jnp.array(
+            [
+                [1, 2, 10, -1, -1],
+                [-1, -1, -1, -1, -1],
+                [3, 4, 5, 6, 7],
+            ],
+            dtype=int,
+        )
+        chex.assert_trees_all_equal(fleet_after_add.passengers, expected_after_add)
+
+        # Remove passenger 10 from vehicle 0
+        remove_passenger = jit(fleet_after_add.remove_passenger)
+        fleet_after_remove = remove_passenger(vehicle_id=0, passenger_id=10)
+        expected_after_remove = jnp.array(
+            [
+                [1, 2, -1, -1, -1],
+                [-1, -1, -1, -1, -1],
+                [3, 4, 5, 6, 7],
+            ],
+            dtype=int,
+        )
+        chex.assert_trees_all_equal(fleet_after_remove.passengers, expected_after_remove)
+
+    @pytest.mark.skip
+    def test_add_passenger_no_fleet(self, empty_fleet: Fleet) -> None:
+        """
+        Test adding a passenger when the fleet is empty should raise an error.
+        """
+        raise NotImplementedError
+
+    @pytest.mark.skip
+    def test_remove_passenger_no_fleet(self, empty_fleet: Fleet) -> None:
+        """
+        Test removing a passenger when the fleet is empty should raise an error.
+        """
+        raise NotImplementedError

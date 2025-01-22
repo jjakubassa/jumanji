@@ -14,6 +14,7 @@
 
 from dataclasses import replace
 from enum import IntEnum
+from functools import cached_property
 from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
@@ -99,7 +100,6 @@ class RouteBatch:
     Represents a collection of routes.
     """
 
-    ids: Int[Array, " {self.num_flex_routes}+{self.num_fix_routes}"]  # unique
     types: Int[Array, " {self.num_flex_routes}+{self.num_fix_routes}"]  # dtype: RouteType
     stops: Int[Array, "{self.num_flex_routes}+{self.num_fix_routes} max_route_length"]
     frequencies: Float[Array, " {self.num_flex_routes}+{self.num_fix_routes}"]
@@ -107,9 +107,9 @@ class RouteBatch:
     num_flex_routes: int
     num_fix_routes: int
 
-    @property
+    @cached_property
     def num_routes(self) -> Int[Array, ""]:
-        return jnp.array(len(self.ids))
+        return jnp.array(len(self.types))
 
     def get_valid_stops(self) -> Bool[Array, " num_routes max_route_length"]:
         """
@@ -139,41 +139,51 @@ class Fleet:
     Represents the collection of all vehicles in the simulation.
     """
 
-    ids: Int[Array, " num_vehicles"]
     route_ids: Int[Array, " num_vehicles"]
     current_edges: Int[Array, " num_vehicles 2"]
+    current_edges_indices: Int[Array, " num_vehicles"]
     times_on_edge: Float[Array, " num_vehicles"]
     passengers: Int[Array, " num_vehicles max_capacity"]
     directions: Int[Array, " num_vehicles"]
 
-    def move_vehicles(self, network: "NetworkData", routes: "RouteBatch") -> "Fleet":
+    def __post_init__(self) -> None:
+        if self.route_ids.size == 0:
+            raise ValueError("Fleet cannot be empty")
+        if self.passengers.shape[1] == 0:
+            raise ValueError("Fleet must have at max_capacity > 0")
+
+    @cached_property
+    def num_vehicles(self) -> int:
+        return len(self.route_ids)
+
+    @property
+    def capacities_left(self) -> Int[Array, " num_vehicles"]:
+        return (self.passengers == -1).sum(axis=1)
+
+    @property
+    def seat_is_available(self) -> Bool[Array, " num_vehicles"]:
+        return self.capacities_left > 0
+
+    @property
+    def is_at_node(self) -> Bool[Array, " num_vehicles"]:
+        return self.times_on_edge == 0
+
+    def add_passenger(self, vehicle_id: Int[Array, ""], passenger_id: Int[Array, ""]) -> "Fleet":
         """
-        Move all vehicles according to their routes and update positions.
-
-        Args:
-            network: NetworkData instance.
-            routes: RouteBatch instance.
-
-        Returns:
-            Updated Fleet instance with new positions.
+        Assign a passenger to the first available seat in the specified vehicle.
+        Assumes that there is at leat on free seat in the vehicle specified.
         """
-        raise NotImplementedError
+        idx_first_free_seat = (self.passengers[vehicle_id, :] == -1).argmax()
+        new_passengers = self.passengers.at[vehicle_id, idx_first_free_seat].set(passenger_id)
+        return replace(self, passengers=new_passengers)
 
-    def assign_passengers(
-        self, passenger_state: "PassengerState", network: "NetworkData", routes: "RouteBatch"
-    ) -> tuple["Fleet", "PassengerState"]:
+    def remove_passenger(self, vehicle_id: Int[Array, ""], passenger_id: Int[Array, ""]) -> "Fleet":
         """
-        Assign passengers to vehicles and update passenger statuses.
-
-        Args:
-            passenger_state: PassengerState instance.
-            network: NetworkData instance.
-            routes: RouteBatch instance.
-
-        Returns:
-            Tuple containing updated Fleet and PassengerState instances.
+        Remove a passenger from the specified vehicle.
         """
-        raise NotImplementedError
+        passenger_seat_idx = jnp.where(self.passengers[vehicle_id] == passenger_id, size=1)
+        new_passengers = self.passengers.at[vehicle_id, passenger_seat_idx].set(-1)
+        return replace(self, passengers=new_passengers)
 
 
 @dataclass
@@ -182,7 +192,6 @@ class PassengerState:
     Represents the state of all passengers.
     """
 
-    ids: Int[Array, " num_passengers"]
     origins: Int[Array, " num_passengers"]
     destinations: Int[Array, " num_passengers"]
     departure_times: Float[Array, " num_passengers"]

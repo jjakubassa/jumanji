@@ -22,7 +22,11 @@ from beartype.typing import Sequence
 from jumanji import specs
 from jumanji.env import Environment
 from jumanji.environments.routing.mandl.types import (
+    Fleet,
+    NetworkData,
     Observation,
+    PassengerState,
+    RouteBatch,
     State,
 )
 from jumanji.environments.routing.mandl.viewer import MandlViewer
@@ -84,3 +88,19 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         raise NotImplementedError
         if self._viewer is not None:
             self._viewer.close()
+
+    def _move_vehicles(self, network: NetworkData, routes: RouteBatch) -> Fleet:
+        """
+        Move all vehicles according to their routes and update positions.
+
+        Args:
+            network: NetworkData instance.
+            routes: RouteBatch instance.
+
+        Returns:
+            Updated Fleet instance with new positions.
+        """
+        raise NotImplementedError
+
+    def _assing_passengers(self, state: State) -> PassengerState:
+        raise NotImplementedError
