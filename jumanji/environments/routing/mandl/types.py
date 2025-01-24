@@ -187,47 +187,77 @@ class Fleet:
 
 
 @dataclass
-class PassengerState:
+class Passengers:
     """
     Represents the state of all passengers.
     """
 
     origins: Int[Array, " num_passengers"]
     destinations: Int[Array, " num_passengers"]
-    departure_times: Float[Array, " num_passengers"]
+    desired_departure_times: Float[Array, " num_passengers"]
     time_waiting: Float[Array, " num_passengers"]
     time_in_vehicle: Float[Array, " num_passengers"]
     statuses: Int[Array, " num_passengers"]  # dtype: PassengerStatus
 
-    def update_passengers(self, current_time: int) -> "PassengerState":
+    @cached_property
+    def num_passengers(self) -> int:
+        return len(self.origins)
+
+    def update_passengers(
+        self,
+        current_time: Float[Array, ""],
+        to_in_vehicle: Bool[Array, " num_passengers"],
+        to_completed: Bool[Array, " num_passengers"],
+    ) -> "Passengers":
         """
-        Update passenger statuses and times based on the current time.
+        Update passenger statuses based on current time and indices of passengers:
+        - NOT_IN_SYSTEM to WAITING based on departure times
+        - WAITING to IN_VEHICLE based on provided indices
+        - IN_VEHICLE to COMPLETED based on provided indices
 
         Args:
-            current_time: The current simulation timestep.
+            current_time: Current simulation time.
+            to_in_vehicle_indices: Indices of passengers transitioning to IN_VEHICLE status.
+            to_completed_indices: Indices of passengers transitioning to COMPLETED status.
 
         Returns:
-            Updated PassengerState instance.
+            Updated Passengers.
         """
-        raise NotImplementedError
+        new_statuses = jnp.where(
+            (self.statuses == PassengerStatus.NOT_IN_SYSTEM)
+            & (self.desired_departure_times == current_time),
+            PassengerStatus.WAITING,
+            self.statuses,
+        )
+        new_statuses = jnp.where(to_in_vehicle, PassengerStatus.IN_VEHICLE, new_statuses)
+        new_statuses = jnp.where(to_completed, PassengerStatus.COMPLETED, new_statuses)
+        return replace(self, statuses=new_statuses)
 
-    def increment_wait_times(self) -> "PassengerState":
+    def increment_wait_times(self) -> "Passengers":
         """
         Increment waiting times for passengers who are waiting.
 
         Returns:
-            Updated PassengerState instance with incremented waiting times.
+            Updated Passengers instance with incremented waiting times.
         """
-        raise NotImplementedError
+        new_wait_times = jnp.where(
+            self.statuses == PassengerStatus.WAITING, self.time_waiting + 1.0, self.time_waiting
+        )
+        return replace(self, time_waiting=new_wait_times)
 
-    def increment_in_vehicle_times(self) -> "PassengerState":
+    def increment_in_vehicle_times(self) -> "Passengers":
         """
         Increment in-vehicle times for passengers who are in vehicles.
 
         Returns:
-            Updated PassengerState instance with incremented in-vehicle times.
+            Updated Passengers instance with incremented in-vehicle times.
         """
-        raise NotImplementedError
+        new_in_vehicle_times = jnp.where(
+            self.statuses == PassengerStatus.IN_VEHICLE,
+            self.time_in_vehicle + 1.0,
+            self.time_in_vehicle,
+        )
+        return replace(self, time_in_vehicle=new_in_vehicle_times)
 
 
 @dataclass
@@ -238,7 +268,7 @@ class State:
 
     network: "NetworkData"
     fleet: "Fleet"
-    passenger_state: "PassengerState"
+    passenger_state: "Passengers"
     routes: "RouteBatch"
     current_time: Float
     key: PRNGKeyArray

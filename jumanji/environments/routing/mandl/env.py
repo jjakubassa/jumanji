@@ -25,7 +25,7 @@ from jumanji.environments.routing.mandl.types import (
     Fleet,
     NetworkData,
     Observation,
-    PassengerState,
+    Passengers,
     RouteBatch,
     State,
 )
@@ -102,5 +102,5 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         """
         raise NotImplementedError
 
-    def _assing_passengers(self, state: State) -> PassengerState:
+    def _assing_passengers(self, state: State) -> Passengers:
         raise NotImplementedError

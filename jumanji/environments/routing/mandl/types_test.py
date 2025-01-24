@@ -12,13 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import replace
+
 import chex
 import jax.numpy as jnp
 import pytest
 from jax import jit
 from jaxtyping import TypeCheckError
 
-from jumanji.environments.routing.mandl.types import Fleet, NetworkData, RouteBatch, RouteType
+from jumanji.environments.routing.mandl.types import (
+    Fleet,
+    NetworkData,
+    Passengers,
+    PassengerStatus,
+    RouteBatch,
+    RouteType,
+)
 
 
 class TestNetworkData:
@@ -132,7 +141,7 @@ class TestRouteBatch:
     def all_on_demand_routes(self) -> RouteBatch:
         num_routes = 5
         return RouteBatch(
-            types=jnp.full(num_routes, RouteType.FLEXIBLE.value),
+            types=jnp.full(num_routes, RouteType.FLEXIBLE),
             stops=jnp.zeros((num_routes, 10), dtype=int),  # assuming max_route_length=10
             frequencies=jnp.ones(num_routes),
             on_demand=jnp.ones(num_routes, dtype=bool),
@@ -144,7 +153,7 @@ class TestRouteBatch:
     def no_on_demand_routes(self) -> RouteBatch:
         num_routes = 5
         return RouteBatch(
-            types=jnp.full(num_routes, RouteType.FIXED.value),
+            types=jnp.full(num_routes, RouteType.FIXED),
             stops=jnp.zeros((num_routes, 10), dtype=int),
             frequencies=jnp.ones(num_routes),
             on_demand=jnp.zeros(num_routes, dtype=bool),
@@ -158,11 +167,11 @@ class TestRouteBatch:
         return RouteBatch(
             types=jnp.array(
                 [
-                    RouteType.FIXED.value,
-                    RouteType.FLEXIBLE.value,
-                    RouteType.FIXED.value,
-                    RouteType.FLEXIBLE.value,
-                    RouteType.FLEXIBLE.value,
+                    RouteType.FIXED,
+                    RouteType.FLEXIBLE,
+                    RouteType.FIXED,
+                    RouteType.FLEXIBLE,
+                    RouteType.FLEXIBLE,
                 ]
             ),
             stops=jnp.zeros((num_routes, 10), dtype=int),
@@ -418,3 +427,360 @@ class TestFleet:
         Test removing a passenger when the fleet is empty should raise an error.
         """
         raise NotImplementedError
+
+
+class TestPassengers:
+    @pytest.fixture
+    def empty_passenger_state(self) -> Passengers:
+        return Passengers(
+            origins=jnp.array([], dtype=int),
+            destinations=jnp.array([], dtype=int),
+            desired_departure_times=jnp.array([], dtype=float),
+            time_waiting=jnp.array([], dtype=float),
+            time_in_vehicle=jnp.array([], dtype=float),
+            statuses=jnp.array([], dtype=int),
+        )
+
+    @pytest.fixture
+    def all_waiting_passengers(self) -> Passengers:
+        return Passengers(
+            origins=jnp.array([0, 1, 2, 3, 4], dtype=int),
+            destinations=jnp.array([5, 6, 7, 8, 9], dtype=int),
+            desired_departure_times=jnp.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=float),
+            time_waiting=jnp.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=float),
+            time_in_vehicle=jnp.array(
+                [-1.0, -1.0, -1.0, -1.0, -1.0], dtype=float
+            ),  # -1 indicates not in vehicle
+            statuses=jnp.array(
+                [
+                    PassengerStatus.WAITING,
+                    PassengerStatus.WAITING,
+                    PassengerStatus.WAITING,
+                    PassengerStatus.WAITING,
+                    PassengerStatus.WAITING,
+                ],
+                dtype=int,
+            ),
+        )
+
+    @pytest.fixture
+    def mixed_passenger_state(self) -> Passengers:
+        return Passengers(
+            origins=jnp.array([0, 1, 2, 3, 4, 5], dtype=int),
+            destinations=jnp.array([5, 6, 7, 8, 9, 10], dtype=int),
+            desired_departure_times=jnp.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0], dtype=float),
+            time_waiting=jnp.array([10.0, 5.0, 0.0, 15.0, 3.0, 0.0], dtype=float),
+            time_in_vehicle=jnp.array([-1.0, -1.0, 20.0, -1.0, 10.0, -1.0], dtype=float),
+            statuses=jnp.array(
+                [
+                    PassengerStatus.WAITING,
+                    PassengerStatus.WAITING,
+                    PassengerStatus.IN_VEHICLE,
+                    PassengerStatus.COMPLETED,
+                    PassengerStatus.IN_VEHICLE,
+                    PassengerStatus.NOT_IN_SYSTEM,
+                ],
+                dtype=int,
+            ),
+        )
+
+    @pytest.fixture
+    def completed_passenger_state(self) -> Passengers:
+        return Passengers(
+            origins=jnp.array([0, 1, 2], dtype=int),
+            destinations=jnp.array([3, 4, 5], dtype=int),
+            desired_departure_times=jnp.array([0.0, 0.0, 0.0], dtype=float),
+            time_waiting=jnp.array([0.0, 0.0, 0.0], dtype=float),
+            time_in_vehicle=jnp.array([30.0, 40.0, 50.0], dtype=float),
+            statuses=jnp.array(
+                [
+                    PassengerStatus.COMPLETED,
+                    PassengerStatus.COMPLETED,
+                    PassengerStatus.COMPLETED,
+                ],
+                dtype=int,
+            ),
+        )
+
+    def test_initialization_empty(self, empty_passenger_state: Passengers) -> None:
+        assert empty_passenger_state.origins.shape == (0,)
+        assert empty_passenger_state.destinations.shape == (0,)
+        assert empty_passenger_state.desired_departure_times.shape == (0,)
+        assert empty_passenger_state.time_waiting.shape == (0,)
+        assert empty_passenger_state.time_in_vehicle.shape == (0,)
+        assert empty_passenger_state.statuses.shape == (0,)
+
+    def test_initialization_all_waiting(self, all_waiting_passengers: Passengers) -> None:
+        assert jnp.all(all_waiting_passengers.statuses == PassengerStatus.WAITING)
+        assert jnp.all(all_waiting_passengers.time_in_vehicle == -1.0)
+
+    def test_initialization_mixed_statuses(self, mixed_passenger_state: Passengers) -> None:
+        expected_statuses = jnp.array(
+            [
+                PassengerStatus.WAITING,
+                PassengerStatus.WAITING,
+                PassengerStatus.IN_VEHICLE,
+                PassengerStatus.COMPLETED,
+                PassengerStatus.IN_VEHICLE,
+                PassengerStatus.NOT_IN_SYSTEM,
+            ],
+            dtype=int,
+        )
+        assert (mixed_passenger_state.statuses == expected_statuses).all()
+
+    def test_initialization_completed(self, completed_passenger_state: Passengers) -> None:
+        assert jnp.all(completed_passenger_state.statuses == PassengerStatus.COMPLETED)
+        assert jnp.all(completed_passenger_state.time_in_vehicle > 0.0)
+
+    def test_increment_wait_times_all_waiting(self, all_waiting_passengers: Passengers) -> None:
+        increment = jit(all_waiting_passengers.increment_wait_times)
+        updated_state = increment()
+        expected_time_waiting = (
+            all_waiting_passengers.time_waiting + 1.0
+        )  # Assuming increment by 1.0
+        assert (updated_state.time_waiting == expected_time_waiting).all()
+
+    def test_increment_wait_times_mixed(self, mixed_passenger_state: Passengers) -> None:
+        increment = jit(mixed_passenger_state.increment_wait_times)
+        updated_state = increment()
+        # Only passengers with status WAITING should have their time_waiting incremented
+        expected_time_waiting = mixed_passenger_state.time_waiting + jnp.where(
+            mixed_passenger_state.statuses == PassengerStatus.WAITING, 1.0, 0.0
+        )
+        assert (updated_state.time_waiting == expected_time_waiting).all()
+
+    def test_increment_in_vehicle_times_all_in_vehicle(
+        self, mixed_passenger_state: Passengers
+    ) -> None:
+        # Modify mixed_passenger_state so all are IN_VEHICLE
+        all_in_vehicle_state = replace(
+            mixed_passenger_state,
+            statuses=jnp.array(
+                [
+                    PassengerStatus.IN_VEHICLE,
+                    PassengerStatus.IN_VEHICLE,
+                    PassengerStatus.IN_VEHICLE,
+                    PassengerStatus.IN_VEHICLE,
+                    PassengerStatus.IN_VEHICLE,
+                    PassengerStatus.IN_VEHICLE,
+                ],
+                dtype=int,
+            ),
+        )
+        increment = jit(all_in_vehicle_state.increment_in_vehicle_times)
+        updated_state = increment()
+        expected_time_in_vehicle = (
+            all_in_vehicle_state.time_in_vehicle + 1.0
+        )  # Assuming increment by 1.0
+        assert (updated_state.time_in_vehicle == expected_time_in_vehicle).all()
+
+    def test_increment_in_vehicle_times_mixed(self, mixed_passenger_state: Passengers) -> None:
+        increment = jit(mixed_passenger_state.increment_in_vehicle_times)
+        updated_state = increment()
+        # Only passengers with status IN_VEHICLE should have their time_in_vehicle incremented
+        expected_time_in_vehicle = mixed_passenger_state.time_in_vehicle + jnp.where(
+            mixed_passenger_state.statuses == PassengerStatus.IN_VEHICLE, 1.0, 0.0
+        )
+        assert (updated_state.time_in_vehicle == expected_time_in_vehicle).all()
+
+    @pytest.fixture
+    def varied_passenger_state(self) -> Passengers:
+        """
+        - Passenger 0: NOT_IN_SYSTEM, desired_departure_times=3.0
+        - Passenger 1: NOT_IN_SYSTEM, desired_departure_times=10.0
+        - Passenger 2: IN_VEHICLE
+        - Passenger 3: WAITING
+        - Passenger 4: COMPLETED
+        """
+        return Passengers(
+            origins=jnp.array([0, 1, 2, 3, 4], dtype=int),
+            destinations=jnp.array([5, 6, 7, 8, 9], dtype=int),
+            desired_departure_times=jnp.array([3.0, 10.0, 1.0, 2.0, 2.0], dtype=float),
+            time_waiting=jnp.array([0.0, 0.0, 1.0, 5.0, 10.0], dtype=float),
+            time_in_vehicle=jnp.array([-1.0, -1.0, 15.0, -1.0, 20.0], dtype=float),
+            statuses=jnp.array(
+                [
+                    PassengerStatus.NOT_IN_SYSTEM,  # index=0
+                    PassengerStatus.NOT_IN_SYSTEM,  # index=1
+                    PassengerStatus.IN_VEHICLE,  # index=2
+                    PassengerStatus.WAITING,  # index=3
+                    PassengerStatus.COMPLETED,  # index=4
+                ],
+                dtype=int,
+            ),
+        )
+
+    def test_update_passengers_not_in_system_to_waiting(
+        self, varied_passenger_state: Passengers
+    ) -> None:
+        """
+        Only passenger 0 has desired_departure_times == 3.0, so at current_time=3.0,
+        passenger 0 should move from NOT_IN_SYSTEM to WAITING.
+        """
+        current_time = jnp.array(3.0)
+        # No one transitions to IN_VEHICLE/COMPLETED in this step:
+        to_in_vehicle = jnp.array([False, False, False, False, False])
+        to_completed = jnp.array([False, False, False, False, False])
+
+        update_passengers = jit(varied_passenger_state.update_passengers)
+        updated_ps = update_passengers(
+            current_time=current_time,
+            to_in_vehicle=to_in_vehicle,
+            to_completed=to_completed,
+        )
+        expected_statuses = jnp.array(
+            [
+                PassengerStatus.WAITING,  # was NOT_IN_SYSTEM, now WAITING
+                PassengerStatus.NOT_IN_SYSTEM,  # remains NOT_IN_SYSTEM
+                PassengerStatus.IN_VEHICLE,  # unchanged
+                PassengerStatus.WAITING,  # unchanged
+                PassengerStatus.COMPLETED,  # unchanged
+            ],
+            dtype=int,
+        )
+        chex.assert_trees_all_equal(updated_ps.statuses, expected_statuses)
+
+    def test_update_passengers_waiting_to_in_vehicle(
+        self, varied_passenger_state: Passengers
+    ) -> None:
+        """
+        Mark passenger 3 for to_in_vehicle transition. Only passenger 3 moves from
+        WAITING -> IN_VEHICLE.
+        """
+        current_time = jnp.array(2.0)  # does not match passenger 0's departure time=3.0
+        to_in_vehicle = jnp.array([False, False, False, True, False])  # passenger 3 transitions
+        to_completed = jnp.array([False, False, False, False, False])
+
+        update_passengers = jit(varied_passenger_state.update_passengers)
+        updated_ps = update_passengers(
+            current_time=current_time,
+            to_in_vehicle=to_in_vehicle,
+            to_completed=to_completed,
+        )
+
+        # passenger 0 remains NOT_IN_SYSTEM, passenger 3 transitions to IN_VEHICLE
+        expected_statuses = jnp.array(
+            [
+                PassengerStatus.NOT_IN_SYSTEM,
+                PassengerStatus.NOT_IN_SYSTEM,
+                PassengerStatus.IN_VEHICLE,
+                PassengerStatus.IN_VEHICLE,  # updated
+                PassengerStatus.COMPLETED,
+            ],
+            dtype=int,
+        )
+        chex.assert_trees_all_equal(updated_ps.statuses, expected_statuses)
+
+    def test_update_passengers_in_vehicle_to_completed(
+        self, varied_passenger_state: Passengers
+    ) -> None:
+        """
+        Mark passenger 2 for to_completed transition. Only passenger 2 moves from
+        IN_VEHICLE -> COMPLETED.
+        """
+        current_time = jnp.array(0.0)  # won't trigger any new WAITING transitions
+        to_in_vehicle = jnp.array([False, False, False, False, False])
+        to_completed = jnp.array([False, False, True, False, False])  # passenger 2 transitions
+
+        update_passengers = jit(varied_passenger_state.update_passengers)
+        updated_ps = update_passengers(
+            current_time=current_time,
+            to_in_vehicle=to_in_vehicle,
+            to_completed=to_completed,
+        )
+        expected_statuses = jnp.array(
+            [
+                PassengerStatus.NOT_IN_SYSTEM,
+                PassengerStatus.NOT_IN_SYSTEM,
+                PassengerStatus.COMPLETED,  # updated from IN_VEHICLE
+                PassengerStatus.WAITING,
+                PassengerStatus.COMPLETED,
+            ],
+            dtype=int,
+        )
+        chex.assert_trees_all_equal(updated_ps.statuses, expected_statuses)
+
+    def test_update_passengers_no_changes(self, varied_passenger_state: Passengers) -> None:
+        """
+        If current_time does not match any passenger's desired_departure_times and
+        no transitions are flagged in the to_in_vehicle/to_completed arrays,
+        then no status changes occur.
+        """
+        current_time = jnp.array(100.0)
+        to_in_vehicle = jnp.zeros_like(varied_passenger_state.statuses, dtype=bool)
+        to_completed = jnp.zeros_like(varied_passenger_state.statuses, dtype=bool)
+
+        update_passengers = jit(varied_passenger_state.update_passengers)
+        updated_ps = update_passengers(
+            current_time=current_time,
+            to_in_vehicle=to_in_vehicle,
+            to_completed=to_completed,
+        )
+        # No changes
+        chex.assert_trees_all_equal(updated_ps.statuses, varied_passenger_state.statuses)
+
+    def test_update_passengers_conflicting_transitions(
+        self, varied_passenger_state: Passengers
+    ) -> None:
+        """
+        If a passenger is marked both to_in_vehicle and to_completed in the same step,
+        the COMPLETED assignment overrides since it is applied last.
+        """
+        # Let's mark passenger 0 for both transitions. Even though passenger 0 is NOT_IN_SYSTEM,
+        # the final 'where' for COMPLETED will override everything if to_completed is True.
+        current_time = jnp.array(3.0)  # triggers passenger 0 to WAITING by time match first
+        to_in_vehicle = jnp.array([True, False, False, False, False])  # passenger 0
+        to_completed = jnp.array([True, False, False, False, False])  # passenger 0
+
+        update_passengers = jit(varied_passenger_state.update_passengers)
+        updated_ps = update_passengers(
+            current_time=current_time,
+            to_in_vehicle=to_in_vehicle,
+            to_completed=to_completed,
+        )
+
+        # The final status for passenger 0 should be COMPLETED.
+        expected_statuses = jnp.array(
+            [
+                PassengerStatus.COMPLETED,  # final override
+                PassengerStatus.NOT_IN_SYSTEM,
+                PassengerStatus.IN_VEHICLE,
+                PassengerStatus.WAITING,
+                PassengerStatus.COMPLETED,
+            ],
+            dtype=int,
+        )
+        chex.assert_trees_all_equal(updated_ps.statuses, expected_statuses)
+
+    def test_update_passengers_multiple_changes(self, varied_passenger_state: Passengers) -> None:
+        """
+        Example scenario:
+        - passenger 0 has desired_departure_times=3.0 and current_time=3.0
+        => NOT_IN_SYSTEM -> WAITING
+        - passenger 3 transitions from WAITING -> IN_VEHICLE
+        - passenger 2 transitions from IN_VEHICLE -> COMPLETED
+        """
+        current_time = jnp.array(3.0)
+        to_in_vehicle = jnp.array([False, False, False, True, False])  # passenger 3
+        to_completed = jnp.array([False, False, True, False, False])  # passenger 2
+
+        update_passengers = jit(varied_passenger_state.update_passengers)
+        updated_ps = update_passengers(
+            current_time=current_time,
+            to_in_vehicle=to_in_vehicle,
+            to_completed=to_completed,
+        )
+        # passenger 0: NOT_IN_SYSTEM -> WAITING (due to matched time)
+        # passenger 3: WAITING -> IN_VEHICLE
+        # passenger 2: IN_VEHICLE -> COMPLETED
+        expected_statuses = jnp.array(
+            [
+                PassengerStatus.WAITING,
+                PassengerStatus.NOT_IN_SYSTEM,
+                PassengerStatus.COMPLETED,
+                PassengerStatus.IN_VEHICLE,
+                PassengerStatus.COMPLETED,
+            ],
+            dtype=int,
+        )
+        chex.assert_trees_all_equal(updated_ps.statuses, expected_statuses)
