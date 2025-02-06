@@ -1,17 +1,17 @@
 [build-system]
-requires=["setuptools>=62.6"]
-build-backend="setuptools.build_meta"
+requires = ["setuptools>=62.6"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name="jumanji"
-authors=[{name="InstaDeep Ltd", email="clement.bonnet16@gmail.com"}]
-dynamic=["version", "dependencies", "optional-dependencies"]
-license={file="LICENSE"}
-description="A diverse suite of scalable reinforcement learning environments in JAX"
-readme ="README.md"
-requires-python=">=3.10"
-keywords=["reinforcement-learning", "python", "jax"]
-classifiers=[
+name = "jumanji"
+authors = [{ name = "InstaDeep Ltd", email = "clement.bonnet16@gmail.com" }]
+dynamic = ["version", "dependencies", "optional-dependencies"]
+license = { file = "LICENSE" }
+description = "A diverse suite of scalable reinforcement learning environments in JAX"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["reinforcement-learning", "python", "jax"]
+classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Science/Research",
@@ -27,22 +27,22 @@ classifiers=[
 ]
 
 [tool.setuptools.packages.find]
-include=["jumanji*"]
+include = ["jumanji*"]
 
 [tool.setuptools.package-data]
 "jumanji" = ["py.typed"]
 
 [tool.setuptools.dynamic]
-version={attr="jumanji.version.__version__"}
-dependencies={file="requirements/requirements.txt"}
-optional-dependencies.dev={file=["requirements/requirements-dev.txt"]}
-optional-dependencies.train={file=["requirements/requirements-train.txt"]}
+version = { attr = "jumanji.version.__version__" }
+dependencies = { file = "requirements/requirements.txt" }
+optional-dependencies.dev = { file = ["requirements/requirements-dev.txt"] }
+optional-dependencies.train = { file = ["requirements/requirements-train.txt"] }
 
 
 [project.urls]
-"Homepage"="https://github.com/instadeep/jumanji"
-"Bug Tracker"="https://github.com/instadeep/jumanji/issues"
-"Documentation"="https://instadeepai.github.io/jumanji"
+"Homepage" = "https://github.com/instadeep/jumanji"
+"Bug Tracker" = "https://github.com/instadeep/jumanji/issues"
+"Documentation" = "https://instadeepai.github.io/jumanji"
 
 [tool.mypy]
 python_version = "3.10"
@@ -95,18 +95,21 @@ ignore_missing_imports = true
 line-length = 100
 
 [tool.ruff.lint]
-select = ["A", "B", "E", "F",  "I", "N", "W", "RUF", "ANN"]
+select = ["A", "B", "E", "F", "I", "N", "W", "RUF", "ANN"]
 ignore = [
-    "E731",    # Allow lambdas to be assigned to variables.
-    "ANN101",  # no need to type self
-    "ANN102",  # no need to type cls
-    "ANN204",  # no need for return type for special methods
-    "ANN401",  # can use Any type
-    "A002",    # Argument shadowing a Python builtin.
-    "A003",    # Class attribute shadowing a Python builtin.
-    "A005",    # Module shadowing a Python builtin.
-    "B017",    # assertRaises(Exception): or pytest.raises(Exception) should be considered evil.
+    "E731",   # Allow lambdas to be assigned to variables.
+    "ANN101", # no need to type self
+    "ANN102", # no need to type cls
+    "ANN204", # no need for return type for special methods
+    "ANN401", # can use Any type
+    "A002",   # Argument shadowing a Python builtin.
+    "A003",   # Class attribute shadowing a Python builtin.
+    "A005",   # Module shadowing a Python builtin.
+    "B017",   # assertRaises(Exception): or pytest.raises(Exception) should be considered evil.
+    "F722",   # wrong error with forward annotation when using jaxtyping
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]  # Ignore `F401` (import violations) in all `__init__.py` files.
+"__init__.py" = [
+    "F401",
+] # Ignore `F401` (import violations) in all `__init__.py` files.

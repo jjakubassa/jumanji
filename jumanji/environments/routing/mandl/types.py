@@ -70,8 +70,8 @@ class NetworkData:
     is_terminal: Bool[Array, " num_nodes"]
 
     @property
-    def num_nodes(self) -> int:
-        return len(self.is_terminal)
+    def num_nodes(self) -> Int[Array, ""]:
+        return jnp.array(len(self.is_terminal))
 
 
 @dataclass
@@ -129,7 +129,7 @@ class Fleet:
 
     @property
     def is_at_node(self) -> Bool[Array, " num_vehicles"]:
-        return self.times_on_edge == 0
+        return jnp.isclose(self.times_on_edge, 0.0)
 
 
 @dataclass
@@ -172,7 +172,7 @@ class Observation:
 
     network: "NetworkData"
     routes: "RouteBatch"
-    fleet_positions: Float[Array, " num_vehicles 2"]
+    fleet_positions: Int[Array, " num_vehicles 2"]
     origins: Int[Array, " num_passengers"]
     destinations: Int[Array, " num_passengers"]
     desired_departure_times: Float[Array, " num_passengers"]
@@ -232,23 +232,21 @@ def get_valid_stops(routes: RouteBatch) -> Bool[Array, "num_routes max_route_len
 
 
 def update_routes(
-    routes: RouteBatch, num_nodes: Int[Array, ""], actions: Int[Array, " NumVehicles"]
+    routes: RouteBatch, num_nodes: Int[Array, ""], action: Int[Array, " NumVehicles"]
 ) -> RouteBatch:
     # find indices of first free stop (-1) in route
     stop_planned = routes.stops != -1
     next_free_stop = (stop_planned).argmin(axis=1)
 
     # handle do nothing actions
-    no_op_mask = actions == num_nodes
-    masked_actions = jnp.where(no_op_mask, -1, actions)
+    no_op_mask = action == num_nodes
 
     # handle case of already full routes by not modifying anything
     routes_are_full = stop_planned.all(axis=1)
-    original_stops = routes.stops[jnp.arange(num_nodes - 1), next_free_stop]
-    masked_actions = jnp.where(routes_are_full, original_stops, masked_actions)
+    route_idxs = jnp.arange(routes.stops.shape[0])
+    original_stops = routes.stops[route_idxs, next_free_stop]
+    masked_actions = jnp.where(routes_are_full | no_op_mask, original_stops, action)
 
-    num_routes = actions.size
-    route_idxs = jnp.arange(num_routes)
     new_stops = routes.stops.at[route_idxs, next_free_stop].set(masked_actions)
     return replace(routes, stops=new_stops)
 
@@ -257,19 +255,10 @@ def get_last_stops(routes: RouteBatch) -> Int[Array, " NumRoutes"]:
     """Retrieve the last valid stop for each route."""
     valid_stop_counts = jnp.sum(routes.stops != -1, axis=1)
     last_stop_indices = valid_stop_counts - 1
-    route_indices = jnp.arange(routes.num_routes)
+    num_routes = routes.stops.shape[0]
+    route_indices = jnp.arange(num_routes)
     last_stops = routes.stops[route_indices, last_stop_indices]
     return last_stops
-
-
-def get_last_stops_flex_routes(routes: RouteBatch) -> Int[Array, " NumFlexRoutes"]:
-    """Retrieve the last valid stop for each flexible route."""
-    flex_indices = jnp.where(
-        routes.types == RouteType.FLEXIBLE, size=routes.num_flex_routes.item()
-    )[0]
-    last_stops_all = get_last_stops(routes)  # Shape: (num_routes,)
-    last_stops_flex = last_stops_all[flex_indices]  # Shape: (num_flex_routes,)
-    return last_stops_flex
 
 
 ### Fleet related functions ###
@@ -318,9 +307,10 @@ def update_passengers(
     Returns:
         Updated Passengers.
     """
+
     new_statuses = jnp.where(
         (passengers.statuses == PassengerStatus.NOT_IN_SYSTEM)
-        & (passengers.desired_departure_times == current_time),
+        & (passengers.desired_departure_times <= current_time),
         PassengerStatus.WAITING,
         passengers.statuses,
     )
@@ -410,11 +400,18 @@ def _update_completed_vehicles(
     route_types = state.routes.types[route_ids]
     routes = state.routes.stops[route_ids]
 
+    # Find last valid stop for each route
+    route_lengths = (routes != -1).sum(axis=1)
+    last_valid_indices = route_lengths - 1
+
     # For completed edges, determine if we need to reverse direction
     current_stops = current_edges[:, 1]  # Use destination of current edge
     is_fixed = route_types == RouteType.FIXED
-    is_at_end = current_stops == routes[:, -1]  # Check if at last stop
-    is_at_start = current_stops == routes[:, 0]  # Check if at first stop
+
+    # Check against actual last valid stop
+    last_stops = jnp.take_along_axis(routes, last_valid_indices[:, None], axis=1)[:, 0]
+    is_at_end = current_stops == last_stops
+    is_at_start = current_stops == routes[:, 0]
 
     # Update directions for completed edges
     should_reverse = (
@@ -476,8 +473,8 @@ def calculate_route_times(
     Returns both times and whether each time is from a forward pass (True) or backward pass
     (False).
     """
-    num_nodes = state.network.num_nodes
-    max_route_length = state.routes.max_route_length
+    num_nodes = state.network.travel_times.shape[0]
+    max_route_length = state.routes.stops.shape[1]
 
     def calculate_single_route_times(
         route: Int[Array, " max_route_length"], route_type: Int[Array, ""]
@@ -736,45 +733,43 @@ def assign_passengers(state: State) -> State:
     return final_state
 
 
-def get_action_mask(
-    state: State,
-) -> Bool[Array, "{state.routes.num_flex_routes} {state.network.num_nodes+1}"]:
-    action_mask = jnp.zeros((state.routes.num_flex_routes, state.network.num_nodes + 1), dtype=bool)
-    last_stops = get_last_stops_flex_routes(state.routes)  # Shape: (num_flex_routes,)
-    node_indices = jnp.arange(state.network.num_nodes)  # Shape: (num_nodes,)
+def handle_completed_passengers(state: State) -> State:
+    """
+    For all vehicles that are at a node (i.e. times_on_edge==0), check each seat.
+    If a seat contains a passenger and that passenger's destination equals the vehicle's
+    current node, then remove the passenger from the vehicle (set seat to -1)
+    and update the passenger's status to COMPLETED.
+    """
+    passengers = state.fleet.passengers  # shape: (num_vehicles, max_capacity)
+    is_at_stop = state.fleet.is_at_node
 
-    # Compute connected nodes
-    connected_nodes = is_connected(state.network, last_stops[:, None], node_indices[None, :])
+    # Find passengers in vehicles that are currently at any stop (not inbetween nodes)
+    passenger_ids_masked = jnp.where(
+        is_at_stop[:, None], passengers, -1
+    )  # shape: (num_vehicles, max_capacity)
 
-    # Exclude the last stop from the allowed actions
-    is_not_last_stop = last_stops[:, None] != node_indices[None, :]
-    connected_nodes = connected_nodes & is_not_last_stop  # Element-wise
-
-    # Always allow the no-op action (e.g., doing nothing)
-    no_op = jnp.ones((state.routes.num_flex_routes, 1), dtype=bool)
-
-    # Concatenate the connected_nodes with the no_op to form the action_mask
-    allowed_actions = jnp.concatenate([connected_nodes, no_op], axis=1)
-
-    # For routes where last_stops == -1, allow all actions
-    initial_routes = (last_stops == -1)[:, None]
-    all_actions = jnp.ones_like(allowed_actions, dtype=bool)
-    action_mask = jnp.where(initial_routes, all_actions, allowed_actions)
-
-    return action_mask
-
-
-def get_observation(state: State) -> Observation:
-    """Creates observation from current state."""
-
-    return Observation(
-        network=state.network,
-        routes=state.routes,
-        fleet_positions=state.fleet.current_edges,
-        origins=state.passengers.origins,
-        destinations=state.passengers.destinations,
-        desired_departure_times=state.passengers.desired_departure_times,
-        passenger_statuses=state.passengers.statuses,
-        current_time=state.current_time,
-        action_mask=get_action_mask(state),
+    # Find destination of those passengers
+    destinations_per_vehicle = state.passengers.destinations[
+        passengers
+    ]  # shape: (num_vehicles, max_capacity)
+    destinations_per_vehicle_masked = jnp.where(
+        passenger_ids_masked != -1, destinations_per_vehicle, -1
     )
+
+    # Filter out passengers not at destination node
+    current_src_node = state.fleet.current_edges[:, 0]
+    passenger_is_at_dest = destinations_per_vehicle_masked == current_src_node[:, None]
+    passenger_ids_masked = jnp.where(passenger_is_at_dest, passenger_ids_masked, -1)
+
+    # Update fleet: set to -1 where passenger_is_at_dest is True
+    new_passengers = jnp.where(passenger_is_at_dest, -1, state.fleet.passengers)
+    new_fleet = replace(state.fleet, passengers=new_passengers)
+
+    # Update Passengers: set status to COMPLETED for completed passengers
+    completed_passenger_ids = passenger_ids_masked.reshape(-1)
+    passenger_mask = jnp.zeros_like(state.passengers.statuses, dtype=bool)
+    passenger_mask = passenger_mask.at[completed_passenger_ids].set(completed_passenger_ids != -1)
+    new_statuses = jnp.where(passenger_mask, PassengerStatus.COMPLETED, state.passengers.statuses)
+    new_passengers = replace(state.passengers, statuses=new_statuses)
+
+    return replace(state, fleet=new_fleet, passengers=new_passengers)
