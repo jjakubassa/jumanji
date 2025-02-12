@@ -618,63 +618,80 @@ def find_best_transfer_route(
     origin: Int[Array, ""],
     destination: Int[Array, ""],
     route_times: Float[Array, "num_routes num_nodes num_nodes"],
-) -> tuple[Float[Array, " NumVehicles"], Int[Array, " NumVehicles"], Int[Array, " NumVehicles"]]:
-    """Find best transfer points between routes when no direct route exists.
+) -> tuple[Float[Array, ""], Int[Array, ""], Int[Array, ""], Int[Array, ""]]:
+    """Find best transfer points between routes.
+
+    The function considers all possible transfer points and combinations of routes to find the
+    shortest total journey time. For each vehicle/route combination, it returns:
+    - The best total journey time (including transfer)
+    - The optimal transfer node
+    - The route to transfer to
+
+    Only fixed routes are considered for transfer planning to guarantee a pickup. We consider
+    only the routes, not the actual journey times. Therefore, it could happpen that a vehicle
+    on a flexible route has already passed the desired origin node.
+
+    Args:
+        state: Current state of the environment
+        origin: Starting node of the journey
+        destination: Final destination node
+        route_times: Pre-calculated times between all pairs of nodes for each route
 
     Returns:
         Tuple of (best_times, transfer_nodes, next_routes) where:
-        - best_times: Total journey time including transfer
-        - transfer_nodes: Node where transfer should occur
-        - next_routes: Route ID to transfer to
+        - best_times: Total journey time for each route/vehicle including transfer
+        - transfer_nodes: Node where transfer should occur for each route/vehicle
+        - next_routes: Route ID to transfer to for each route/vehicle
     """
-    num_nodes = state.network.num_nodes
-    num_vehicles = state.fleet.num_vehicles
-
-    # Initialize with infinity/invalid values
-    best_times = jnp.full(num_vehicles, jnp.inf)
-    best_transfer_nodes = jnp.full(num_vehicles, -1)
-    best_next_routes = jnp.full(num_vehicles, -1)
+    # Mask out flex routes by setting their times to infinity
+    fixed_route_mask = state.routes.types == RouteType.FIXED
+    masked_route_times = jnp.where(fixed_route_mask[:, None, None], route_times, jnp.inf)
 
     def update_best_transfer(
-        carry: tuple[Float[Array, "..."], Int[Array, "..."], Int[Array, "..."]],
+        carry: tuple[Float[Array, ""], Int[Array, ""], Int[Array, ""], Int[Array, ""]],
         transfer_node: Int[Array, ""],
-    ) -> tuple[Float[Array, "..."], Int[Array, "..."], Int[Array, "..."]]:
-        curr_best_times, curr_transfer_nodes, curr_next_routes = carry
+    ) -> tuple[tuple[Float[Array, ""], Int[Array, ""], Int[Array, ""], Int[Array, ""]], None]:
+        curr_best_time, curr_transfer_node, curr_first_leg_route, curr_second_leg_route = carry
 
-        # Time to transfer point on first route
-        first_leg = route_times[:, origin, transfer_node]
-        # Time from transfer point to destination on second route
-        second_leg = route_times[:, transfer_node, destination]
+        # Time to transfer point on first leg
+        first_leg_times = masked_route_times[:, origin, transfer_node]
+        # Time from transfer point to destination on second leg
+        second_leg_times = masked_route_times[:, transfer_node, destination]
 
-        # For each initial route, find best connecting route
-        transfer_times = first_leg[:, None] + second_leg[None, :]
+        # Calculate all possible combinations
+        transfer_times = first_leg_times[:, None] + second_leg_times[None, :]
 
-        # Find best connecting route for each initial route
-        best_second_leg = jnp.min(transfer_times, axis=1)
-        best_next_route = jnp.argmin(transfer_times, axis=1)
+        # Find best combination for this transfer node
+        best_time = jnp.min(transfer_times)
+        best_idx = jnp.unravel_index(jnp.argmin(transfer_times), transfer_times.shape)
+        first_leg_route, second_leg_route = best_idx
 
         # Update if better than current best
-        is_better = best_second_leg < curr_best_times
-        new_best_times = jnp.where(is_better, best_second_leg, curr_best_times)
-        new_transfer_nodes = jnp.where(is_better, transfer_node, curr_transfer_nodes)
-        new_next_routes = jnp.where(is_better, best_next_route, curr_next_routes)
+        is_better = best_time < curr_best_time
+        new_best_time = jnp.where(is_better, best_time, curr_best_time)
+        new_transfer_node = jnp.where(is_better, transfer_node, curr_transfer_node)
+        new_first_leg_route = jnp.where(is_better, first_leg_route, curr_first_leg_route)
+        new_second_leg_route = jnp.where(is_better, second_leg_route, curr_second_leg_route)
 
-        return (new_best_times, new_transfer_nodes, new_next_routes)
+        return (new_best_time, new_transfer_node, new_first_leg_route, new_second_leg_route), None
+
+    # Initialize with infinity/invalid values
+    init_carry = (jnp.array(jnp.inf), jnp.array(-1), jnp.array(-1), jnp.array(-1))
 
     # Scan through all possible transfer nodes
-    init_carry = (best_times, best_transfer_nodes, best_next_routes)
-    (best_times, best_transfer_nodes, best_next_routes), _ = jax.lax.scan(
+    num_nodes = route_times.shape[1]
+    (best_time, transfer_node, first_leg_route, second_leg_route), _ = jax.lax.scan(
         update_best_transfer, init_carry, jnp.arange(num_nodes)
     )
 
-    return best_times, best_transfer_nodes, best_next_routes
+    return best_time, transfer_node, first_leg_route, second_leg_route
 
 
 def assign_passengers(
     state: State,
     discount_factor_future: float = 0.8,
 ) -> State:
-    """Optimistic assignment considering both current and future vehicle availability."""
+    """Optimistic assignment considering both direct and transfer journeys."""
     # Get all waiting passengers
     waiting_mask = state.passengers.statuses == PassengerStatus.WAITING
 
@@ -690,23 +707,42 @@ def assign_passengers(
         origin = state.passengers.origins[passenger_idx]
         dest = state.passengers.destinations[passenger_idx]
 
-        # Calculate journey times for all vehicles
-        journey_times = calculate_journey_times(state, origin, dest, route_times, route_directions)
+        # Try direct journey first
+        direct_times = calculate_journey_times(state, origin, dest, route_times, route_directions)
+        has_direct_route = jnp.any(jnp.isfinite(direct_times))
+
+        # If no direct route, find best transfer point
+        transfer_time, transfer_node, _, _ = jax.lax.cond(
+            has_direct_route,
+            lambda: (jnp.inf, jnp.array(-1), jnp.array(-1), jnp.array(-1)),
+            lambda: find_best_transfer_route(state, origin, dest, route_times),
+        )
+
+        # Use direct_times if available, otherwise calculate times to transfer node
+        journey_times = jax.lax.cond(
+            has_direct_route,
+            lambda: direct_times,
+            lambda: calculate_journey_times(
+                state, origin, transfer_node, route_times, route_directions
+            ),
+        )
 
         # Calculate immediate boarding opportunities
         is_at_correct_stop = state.fleet.is_at_node & (state.fleet.current_edges[:, 0] == origin)
         immediate_boarding_possible = is_at_correct_stop & state.fleet.seat_is_available
 
         # Check route validity and calculate options
-        connects_od = jnp.isfinite(journey_times)
+        connects_target = jnp.isfinite(journey_times)
         immediate_times = jnp.where(
-            immediate_boarding_possible & connects_od, journey_times, jnp.inf
+            immediate_boarding_possible & connects_target, journey_times, jnp.inf
         )
         future_times = jnp.where(
-            connects_od & state.fleet.seat_is_available, journey_times, jnp.inf
+            connects_target & state.fleet.seat_is_available, journey_times, jnp.inf
         )
 
         # Board if immediate option exists and no significantly better future option exists
+        assert isinstance(future_times, jnp.ndarray)
+        assert isinstance(immediate_times, jnp.ndarray)
         best_future_time = jnp.min(future_times)
         should_board = jnp.isfinite(immediate_times) & (
             best_future_time >= immediate_times * discount_factor_future
@@ -722,8 +758,18 @@ def assign_passengers(
 
         def update_state(state: State) -> State:
             new_fleet = add_passenger(state.fleet, best_vehicle, passenger_idx)
-            new_status = state.passengers.statuses.at[passenger_idx].set(PassengerStatus.IN_VEHICLE)
-            new_passengers = replace(state.passengers, statuses=new_status)
+            new_statuses = state.passengers.statuses.at[passenger_idx].set(
+                PassengerStatus.IN_VEHICLE
+            )
+            # Set transfer node if this is a transfer journey
+            new_transfer_nodes = state.passengers.transfer_nodes.at[passenger_idx].set(
+                transfer_node
+            )
+            new_passengers = replace(
+                state.passengers,
+                statuses=new_statuses,
+                transfer_nodes=new_transfer_nodes,
+            )
             return replace(state, fleet=new_fleet, passengers=new_passengers)
 
         new_state = jax.lax.cond(
@@ -733,7 +779,6 @@ def assign_passengers(
             state,
         )
         assert isinstance(new_state, State)
-
         return new_state
 
     # Process all waiting passengers
@@ -825,7 +870,10 @@ def handle_completed_and_transferring_passengers(state: State) -> State:
     # Loop over all passengers in vehicles
     total_passengers = passengers.shape[0] * passengers.shape[1]
     new_statuses, new_has_transferred = jax.lax.fori_loop(
-        0, total_passengers, update_passenger_status, (init_statuses, init_has_transferred)
+        jnp.array(0),
+        jnp.array(total_passengers),
+        update_passenger_status,
+        (init_statuses, init_has_transferred),
     )
 
     # Update fleet: remove passengers who should get off

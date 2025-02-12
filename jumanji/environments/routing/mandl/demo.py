@@ -27,7 +27,8 @@ def main() -> None:
     plt.ion()
 
     # Create environment
-    env = Mandl(network_name="mandl1", runtime=60.0, vehicle_capacity=50)
+    n_steps = 30_000
+    env = Mandl(network_name="mandl1", runtime=n_steps, vehicle_capacity=50)
 
     # Reset environment and get initial state
     key = jax.random.PRNGKey(42)
@@ -73,7 +74,7 @@ def main() -> None:
     # states = [state]
     step = jax.jit(env.step)
 
-    for i in tqdm.tqdm(range(1200)):
+    for i in tqdm.tqdm(range(n_steps * 2)):
         # For now, just use dummy action (no-op for all flexible routes)
         action = jax.numpy.full(
             state.routes.num_routes,
