@@ -13,8 +13,9 @@
 # limitations under the License.
 
 import collections
+from collections.abc import Sequence
 from importlib import resources
-from typing import Any, Callable, Optional, Sequence, Tuple
+from typing import Any, Callable, Optional
 
 import jax.numpy as jnp
 import matplotlib.image as mpimg
@@ -120,7 +121,7 @@ class MandlViewer(Viewer):
         except ImportError:
             pass
 
-    def get_fig_ax(self) -> Tuple[plt.Figure, plt.Axes]:
+    def get_fig_ax(self) -> tuple[plt.Figure, plt.Axes]:
         """Get the figure and axes objects."""
         recreate = not plt.fignum_exists(self._name)
         fig = plt.figure(self._name, figsize=self.FIGURE_SIZE)

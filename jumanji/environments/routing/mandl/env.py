@@ -34,12 +34,12 @@ from jumanji.environments.routing.mandl.types import (
     State,
     assign_passengers,
     get_last_stops,
-    handle_completed_passengers,
+    handle_completed_and_transferring_passengers,
     increment_in_vehicle_times,
     increment_wait_times,
     is_connected,
     move_vehicles,
-    update_passengers,
+    update_passengers_to_waiting,
     update_routes,
 )
 from jumanji.environments.routing.mandl.utils import (
@@ -130,15 +130,14 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         new_passengers = increment_in_vehicle_times(new_passengers)
         state = replace(state, passengers=new_passengers)
 
-        # 4. For passengers at their goal: remove passengers from vehicles and
+        # 4. For passengers at their goal or transfer stop: remove passengers from vehicles and
         # update passengers status
-        state = handle_completed_passengers(state)
+        state = handle_completed_and_transferring_passengers(state)
 
         # 5. Switch status to WAITING based on current time
-        to_in_vehicle = jnp.zeros(state.passengers.statuses.shape, dtype=bool)
-        to_completed = jnp.zeros(state.passengers.statuses.shape, dtype=bool)
-        new_passengers = update_passengers(
-            state.passengers, state.current_time, to_in_vehicle, to_completed
+        new_passengers = update_passengers_to_waiting(
+            state.passengers,
+            state.current_time,
         )
         state = replace(state, passengers=new_passengers)
 

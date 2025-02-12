@@ -147,6 +147,8 @@ def create_initial_passengers(
         time_waiting=time_waiting,
         time_in_vehicle=time_in_vehicle,
         statuses=statuses,
+        has_transferred=jnp.zeros(num_passengers, dtype=bool),
+        transfer_nodes=jnp.full(num_passengers, -1, dtype=jnp.int32),
     )
 
 

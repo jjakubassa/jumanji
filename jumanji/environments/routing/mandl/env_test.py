@@ -76,6 +76,8 @@ class TestActionMasking:
                 time_waiting=jnp.array([], dtype=float),
                 time_in_vehicle=jnp.array([], dtype=float),
                 statuses=jnp.array([], dtype=int),
+                has_transferred=jnp.array([], dtype=bool),
+                transfer_nodes=jnp.array([], dtype=int),
             ),
             routes=empty_routes,
             current_time=jnp.array(0.0),
