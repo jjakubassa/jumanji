@@ -12,14 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict, Optional, Tuple
+import multiprocessing
+import os
+from typing import Any, Callable, Dict, Tuple
 
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 from numpy.typing import NDArray
-from stable_baselines3 import A2C
-from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
+from sbx import PPO
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 import jumanji
 from jumanji import Environment
@@ -29,8 +31,12 @@ from jumanji.wrappers import JumanjiToGymWrapper
 class FlattenDictWrapper(gym.Wrapper):
     def __init__(self, env: Environment) -> None:
         super().__init__(env)
-        self._observation_space: Optional[spaces.Box] = None
         self._eps: float = 1e-8
+
+        # Initialize observation space immediately
+        dummy_obs, _ = env.reset()  # type: ignore
+        flattened = self._flatten_obs(dummy_obs)
+        self.observation_space = spaces.Box(low=0, high=1, shape=flattened.shape, dtype=np.float32)
 
     def _preprocess_value(self, value: Any, key: str) -> NDArray[np.float32]:
         """Preprocess values to avoid numerical issues."""
@@ -127,55 +133,80 @@ class FlattenDictWrapper(gym.Wrapper):
         return self._flatten_obs(obs), reward, terminated, truncated, info
 
 
-# Create environment
-env = jumanji.make("Mandl-v0")
-env = JumanjiToGymWrapper(env)
-env.render_mode = "rgb_array"
+def make_env(rank: int) -> Callable[[], gym.Env]:
+    """
+    Creates a function that creates an environment.
+    This is needed for SubprocVecEnv to properly handle environment creation in separate processes.
+    """
 
-# Print action space information
-print("\nAction Space Information:")
-print(f"Action Space: {env.action_space}")
-print(f"Action Space Shape: {env.action_space.shape}")
-print(f"Action Space Sample: {env.action_space.sample()}")
+    def _init() -> gym.Env:
+        env = jumanji.make("Mandl-v0")
+        env = JumanjiToGymWrapper(env)
+        env.render_mode = "rgb_array"
+        env = FlattenDictWrapper(env)
+        return env
 
-# Print observation space details
-print("\nOriginal observation space structure:")
-for key, space in env.observation_space.spaces.items():
-    if isinstance(space, spaces.Dict):
-        print(f"{key}:")
-        for subkey, subspace in space.spaces.items():
-            print(f"  {subkey}: {subspace}")
-    else:
-        print(f"{key}: {space}")
+    return _init
 
-# Wrap environment
-env = FlattenDictWrapper(env)
 
-# Test reset and action
-obs, _ = env.reset()
-print("\nObservation shape:", obs.shape)
+def main() -> None:
+    # Create and test a single environment first
+    test_env = make_env(0)()
 
-# Wrap for training
-vec_env = DummyVecEnv([lambda: env])
-vec_env = VecMonitor(vec_env)
+    # Print action space information
+    print("\nAction Space Information:")
+    print(f"Action Space: {test_env.action_space}")
+    print(f"Action Space Shape: {test_env.action_space.shape}")
+    print(f"Action Space Sample: {test_env.action_space.sample()}")
+    print("\nObservation Space Information:")
+    print(f"Observation Space: {test_env.observation_space}")
+    print(f"Observation Space Shape: {test_env.observation_space.shape}")
 
-# Create and train model with explicit action space handling
-model = A2C(
-    "MlpPolicy",
-    vec_env,
-    verbose=1,
-    policy_kwargs={
-        "net_arch": [64, 64],
-        "normalize_images": False,
-    },
-)
+    # Test reset and action
+    obs, _ = test_env.reset()
+    print("\nObservation shape:", obs.shape)
+    test_env.close()
 
-try:
-    print("\n=== Starting training ===")
-    model.learn(total_timesteps=int(1e6), progress_bar=True, log_interval=100)
-except Exception as e:
-    print(f"\nError during training: {e}")
-    print("\nStack trace:")
-    import traceback
+    # Create multiple environments in parallel
+    num_envs = os.cpu_count() or 4  # Use number of CPU cores, fallback to 4
+    vec_env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
+    vec_env = VecMonitor(vec_env)
 
-    traceback.print_exc()
+    print(f"\nCreated {num_envs} parallel environments")
+
+    # Create and train model
+    model = PPO(
+        "MlpPolicy",
+        vec_env,
+        verbose=1,
+        n_steps=2048 // num_envs,  # Adjust batch size for multiple envs
+        batch_size=64,
+        learning_rate=3e-4,
+        policy_kwargs={
+            "net_arch": dict(pi=[64, 64], vf=[64, 64]),
+            "normalize_images": False,
+        },
+        device="cpu",
+    )
+
+    try:
+        print(f"\n=== Starting training with {num_envs} parallel environments ===")
+        model.learn(total_timesteps=int(1e6), progress_bar=True, log_interval=1)
+
+        # Save the model
+        model.save("ppo_mandl")
+
+    except Exception as e:
+        print(f"\nError during training: {e}")
+        print("\nStack trace:")
+        import traceback
+
+        traceback.print_exc()
+    finally:
+        vec_env.close()
+
+
+if __name__ == "__main__":
+    # Required for multiprocessing on Windows and macOS
+    multiprocessing.set_start_method("spawn")
+    main()
