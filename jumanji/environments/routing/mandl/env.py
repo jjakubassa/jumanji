@@ -62,7 +62,8 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         network_name: Literal["mandl1", "ceder1"] = "mandl1",
         runtime: float = 100.0,
         vehicle_capacity: int = 20,
-        num_flex_routes: int = 50,
+        num_flex_routes: int = 16,
+        max_route_length: int = 16,
     ) -> None:
         self.network_name: Final = network_name
         self.runtime: Final = runtime
@@ -75,11 +76,20 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         # Load all static data once during initialization
         self._network_data = load_network_data(network_name)
         self._routes, self._vehicles_per_route = load_solution_data(network_name)
-        self.max_route_length = max(len(route) for route in self._routes)
+
+        # Check if solution routes exceed max_stops
+        max_solution_length = max(len(route) for route in self._routes)
+        if max_solution_length > max_route_length:
+            print(
+                f"WARNING: Solution routes contain up to {max_solution_length} stops, "
+                f"which exceeds the specified max_stops={max_route_length}. "
+                f"Using {max_solution_length} as maximum."
+            )
+        self.max_route_length: Final = max(max_solution_length, max_route_length)
 
         # Create static components once
         self._route_batch = create_initial_routes(
-            self._routes, num_flex_routes=self.num_flex_routes
+            self._routes, num_flex_routes=self.num_flex_routes, max_stops=self.max_route_length
         )
         self._initial_fleet = create_initial_fleet(
             self._routes,
@@ -164,7 +174,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         timestep = jax.lax.cond(
             done,
             lambda: termination(observation=obs, reward=reward),
-            lambda: transition(observation=obs, reward=reward),
+            lambda: transition(observation=obs, reward=jnp.array(0.0)),
         )
 
         # 11. Return updated state and timestep

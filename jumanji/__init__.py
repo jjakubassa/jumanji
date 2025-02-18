@@ -143,4 +143,4 @@ register(id="SlidingTilePuzzle-v0", entry_point="jumanji.environments:SlidingTil
 # 2 agents and 2 food items and the maximum agent's level is 2.
 register(id="LevelBasedForaging-v0", entry_point="jumanji.environments:LevelBasedForaging")
 
-register(id="Mandl-v0", entry_point="jumanji.environments:Mandl")
+register(id="Mandl-v0", entry_point="jumanji.environments.routing.mandl:Mandl")

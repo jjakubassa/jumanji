@@ -186,35 +186,38 @@ class MandlTorso(hk.Module):
     def _embed_routes(
         self, routes: jnp.ndarray, frequencies: jnp.ndarray, on_demand: jnp.ndarray
     ) -> jnp.ndarray:
-        """Embed routes with position information and route characteristics.
-
-        Args:
-            routes: Route node sequences, shape (batch_size, num_routes, max_route_length)
-            frequencies: Route frequencies, shape (batch_size, num_routes)
-            on_demand: Boolean indicating if route is flexible, shape (batch_size, num_routes)
-
-        Returns:
-            Route embeddings with shape (batch_size, num_routes, embedding_size + 2)
-        """
+        """Embed routes with position information and route characteristics."""
         # 1. Create route position embeddings
         num_routes = routes.shape[1]
+        max_route_length = routes.shape[2]
+
+        # Create position embeddings
         route_positions = jnp.arange(num_routes)[None, :, None]  # Shape: (1, num_routes, 1)
         route_position_embedding = hk.Linear(self.embedding_size)(
             route_positions.astype(float)
         )  # Shape: (1, num_routes, embedding_size)
 
         # 2. Create route sequence embeddings
+        # First flatten the routes for processing
+        batch_size = routes.shape[0]
+        flattened_routes = routes.reshape(-1, max_route_length)
+
         route_mlp = hk.Sequential(
             [
-                hk.Linear(self.embedding_size),
+                hk.Linear(32),  # Smaller intermediate size
                 jnp.tanh,
                 hk.Linear(self.embedding_size),
                 jnp.tanh,
             ]
         )
-        route_sequence_features = route_mlp(
-            routes.astype(float)
-        )  # (batch_size, num_routes, embedding_size)
+
+        # Process flattened routes
+        route_sequence_features = route_mlp(flattened_routes.astype(float))
+
+        # Reshape back to original dimensions
+        route_sequence_features = route_sequence_features.reshape(
+            batch_size, num_routes, self.embedding_size
+        )
 
         # 3. Create route type embeddings for fixed vs flexible routes
         route_type_embedding = hk.Linear(self.embedding_size)(
@@ -246,9 +249,11 @@ class MandlTorso(hk.Module):
             ]
         )
 
-        # Reshape to apply final MLP
+        # Process flattened route info
         b, r, f = route_info.shape
-        route_info = final_mlp(route_info.reshape(-1, f)).reshape(b, r, -1)
+        route_info = route_info.reshape(-1, f)  # Flatten for processing
+        route_info = final_mlp(route_info)  # Process
+        route_info = route_info.reshape(b, r, -1)  # Reshape back
 
         return route_info
 

@@ -319,32 +319,51 @@ def create_initial_fleet(
     return fleet
 
 
-def create_initial_routes(routes: list[list[int]], num_flex_routes: int) -> RouteBatch:
+def create_initial_routes(
+    routes: list[list[int]], num_flex_routes: int, max_stops: int
+) -> RouteBatch:
     """Create initial routes based on solution routes."""
     print("\nDEBUG: Creating initial routes:")
     print(f"Number of input routes: {len(routes)}")
     for i, route in enumerate(routes):
         print(f"Route {i}: {route}")
 
-    num_routes = len(routes)
+    num_fix_routes = len(routes)
+    total_routes = num_fix_routes + num_flex_routes
 
-    # Find maximum route length
-    max_length = max(len(route) for route in routes)
-    print(f"Maximum route length: {max_length}")
+    # Find maximum route length (considering both solution and max_stops)
+    max_solution_length = max(len(route) for route in routes)
+    max_length = max(max_solution_length, max_stops)
+    print(
+        f"""
+        Maximum route length: {max_length} (solution: {max_solution_length}, specified: {max_stops})
+        """
+    )
 
-    # Create padded routes array
+    # Create padded routes array for all routes (fixed + flexible)
     padded_routes = []
+
+    # Add fixed routes
     for route in routes:
         padded = route + [-1] * (max_length - len(route))
         padded_routes.append(padded)
-        print(f"Padded route: {padded}")
+        print(f"Padded fixed route: {padded}")
+
+    # Add empty flexible routes
+    for _ in range(num_flex_routes):
+        padded_routes.append([-1] * max_length)
+
+    # Create route types array
+    route_types = jnp.concatenate(
+        [jnp.full(num_fix_routes, RouteType.FIXED), jnp.full(num_flex_routes, RouteType.FLEXIBLE)]
+    )
 
     route_batch = RouteBatch(
-        types=jnp.full(num_routes, RouteType.FIXED, dtype=jnp.int32),
+        types=route_types.astype(jnp.int32),
         stops=jnp.array(padded_routes, dtype=jnp.int32),
-        frequencies=jnp.ones(num_routes, dtype=jnp.float32),
+        frequencies=jnp.ones(total_routes, dtype=jnp.float32),
         num_flex_routes=jnp.array(num_flex_routes),
-        num_fix_routes=jnp.array(num_routes),
+        num_fix_routes=jnp.array(num_fix_routes),
     )
 
     print("\nDEBUG: Created RouteBatch:")
