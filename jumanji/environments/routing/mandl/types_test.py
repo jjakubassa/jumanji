@@ -21,7 +21,7 @@ import pytest
 from jax import jit
 from jaxtyping import TypeCheckError
 
-from jumanji.environments.routing.mandl.types import (
+from jumanji.environments.routing.mandl import (
     Fleet,
     NetworkData,
     Passengers,

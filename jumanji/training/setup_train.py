@@ -47,6 +47,7 @@ from jumanji.environments import (
     Sudoku,
     Tetris,
 )
+from jumanji.environments.routing.mandl import Mandl
 from jumanji.training import networks
 from jumanji.training.agents.a2c import A2CAgent
 from jumanji.training.agents.base import Agent
@@ -288,6 +289,15 @@ def _setup_actor_critic_neworks(cfg: DictConfig, env: Environment) -> ActorCriti
             num_customers=cfg.env.network.num_customers,
             num_layers_vehicles=cfg.env.network.num_layers_vehicles,
             num_layers_customers=cfg.env.network.num_layers_customers,
+            transformer_num_heads=cfg.env.network.transformer_num_heads,
+            transformer_key_size=cfg.env.network.transformer_key_size,
+            transformer_mlp_units=cfg.env.network.transformer_mlp_units,
+        )
+    elif cfg.env.name == "mandl":
+        assert isinstance(env.unwrapped, Mandl)
+        actor_critic_networks = networks.make_actor_critic_networks_mandl(
+            mandl=env.unwrapped,
+            transformer_num_blocks=cfg.env.network.transformer_num_blocks,
             transformer_num_heads=cfg.env.network.transformer_num_heads,
             transformer_key_size=cfg.env.network.transformer_key_size,
             transformer_mlp_units=cfg.env.network.transformer_mlp_units,

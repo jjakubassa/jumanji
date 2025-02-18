@@ -16,7 +16,6 @@ from typing import Optional, Sequence
 
 import chex
 import haiku as hk
-import jax
 import jax.numpy as jnp
 
 from jumanji.environments.routing.mandl import Mandl, Observation
@@ -58,7 +57,7 @@ class MandlTorso(hk.Module):
 
         # 3. Passenger Embedding
         passenger_features = self._embed_passengers(
-            obs.origins, obs.destinations, obs.passenger_statuses
+            obs.origins, obs.destinations, obs.passenger_statuses, obs.desired_departure_times
         )
 
         # Project all features to model_size
@@ -79,9 +78,17 @@ class MandlTorso(hk.Module):
         passenger_features = passenger_features[:, None, :]  # (B, 1, model_size)
 
         # normalize input features
-        network_features = hk.LayerNorm(axis=-1)(network_features)
-        route_features = hk.LayerNorm(axis=-1)(route_features)
-        passenger_features = hk.LayerNorm(axis=-1)(passenger_features)
+        network_features = hk.LayerNorm(
+            axis=-1, create_scale=True, create_offset=True, name="network_norm"
+        )(network_features)
+
+        route_features = hk.LayerNorm(
+            axis=-1, create_scale=True, create_offset=True, name="route_norm"
+        )(route_features)
+
+        passenger_features = hk.LayerNorm(
+            axis=-1, create_scale=True, create_offset=True, name="passenger_norm"
+        )(passenger_features)
 
         # Concatenate along sequence dimension
         combined_features = jnp.concatenate(
@@ -138,26 +145,43 @@ class MandlTorso(hk.Module):
         return combined_features
 
     def _embed_network_structure(
-        self, network: jnp.ndarray, travel_times: jnp.ndarray
+        self, node_coordinates: jnp.ndarray, travel_times: jnp.ndarray
     ) -> jnp.ndarray:
-        network_info = jnp.stack(
+        # Create features from travel times matrix
+        edge_features = jnp.where(
+            travel_times == jnp.inf, 0.0, travel_times
+        )  # Shape: (B, num_nodes, num_nodes)
+
+        # Flatten edge features - need to handle batch dimension
+        batch_size = edge_features.shape[0]
+        flat_edge_features = edge_features.reshape(
+            batch_size, -1
+        )  # Shape: (B, num_nodes * num_nodes)
+
+        # Calculate mean features and reshape to match dimensions
+        mean_outgoing = jnp.mean(edge_features, axis=2)  # Shape: (B, num_nodes)
+        mean_incoming = jnp.mean(edge_features, axis=1)  # Shape: (B, num_nodes)
+
+        # Concatenate all features
+        network_features = jnp.concatenate(
             [
-                network.astype(float),
-                jnp.where(travel_times == jnp.inf, 0.0, travel_times),
+                flat_edge_features,
+                mean_outgoing,
+                mean_incoming,
             ],
-            axis=-1,
-        )  # Shape: (batch_size, num_nodes, num_nodes, 2)
+            axis=1,
+        )  # Shape: (B, num_nodes * num_nodes + 2 * num_nodes)
 
         network_mlp = hk.Sequential(
             [
-                hk.Flatten(),
                 hk.Linear(self.embedding_size),
                 jnp.tanh,
                 hk.Linear(self.embedding_size),
                 jnp.tanh,
             ]
         )
-        return network_mlp(network_info)  # Shape: (batch_size, embedding_size)
+
+        return network_mlp(network_features)  # Shape: (B, embedding_size)
 
     def _embed_routes(
         self, routes: jnp.ndarray, frequencies: jnp.ndarray, on_demand: jnp.ndarray
@@ -230,35 +254,46 @@ class MandlTorso(hk.Module):
 
     def _embed_passengers(
         self,
-        origins: jnp.ndarray,
-        destinations: jnp.ndarray,
-        statuses: jnp.ndarray,
+        origins: jnp.ndarray,  # Shape: (batch_size, num_passengers)
+        destinations: jnp.ndarray,  # Shape: (batch_size, num_passengers)
+        statuses: jnp.ndarray,  # Shape: (batch_size, num_passengers)
+        desired_departure_times: jnp.ndarray,  # Shape: (batch_size, num_passengers)
     ) -> jnp.ndarray:
+        # Create feature vector: for each passenger combine
+        # (origin, destination, desired_time, is_waiting)
+        is_waiting = (statuses == PassengerStatus.WAITING).astype(jnp.float32)
+        passenger_features = jnp.stack(
+            [
+                origins.astype(jnp.float32),
+                destinations.astype(jnp.float32),
+                desired_departure_times,
+                is_waiting,
+            ],
+            axis=-1,
+        )  # Shape: (batch_size, num_passengers, 4)
+
+        # First MLP to process each passenger independently
         passenger_mlp = hk.Sequential(
             [
-                hk.Flatten(),
-                hk.Linear(self.embedding_size),
+                hk.Linear(32),
                 jnp.tanh,
-                hk.Linear(self.embedding_size),
+                hk.Linear(32),
                 jnp.tanh,
             ]
         )
 
-        # Create OD matrices based on actual passenger data - vectorized version
-        batch_size = origins.shape[0]
-        waiting_mask = statuses == PassengerStatus.WAITING
+        # Process each passenger independently
+        batch_size, num_passengers, feature_dim = passenger_features.shape
+        reshaped_features = passenger_features.reshape(-1, feature_dim)
+        processed_features = passenger_mlp(reshaped_features)
+        processed_features = processed_features.reshape(batch_size, num_passengers, -1)
 
-        # Create indices for updating
-        batch_idx = jnp.arange(batch_size)[:, None]
-        origins_idx = origins[waiting_mask]
-        destinations_idx = destinations[waiting_mask]
+        # Pool across passengers
+        pooled_features = jnp.mean(processed_features, axis=1)  # Shape: (batch_size, 32)
 
-        # Create OD matrix using scatter_add
-        od_matrix = jnp.zeros((batch_size, self.num_nodes, self.num_nodes))
-        od_matrix = od_matrix.at[batch_idx, origins_idx, destinations_idx].add(1)
-
-        passenger_features = passenger_mlp(od_matrix)
-        return passenger_features
+        # Final projection to embedding size
+        final_projection = hk.Linear(self.embedding_size)
+        return final_projection(pooled_features)  # Shape: (batch_size, embedding_size)
 
 
 def make_actor_critic_networks_mandl(
@@ -269,16 +304,21 @@ def make_actor_critic_networks_mandl(
     transformer_mlp_units: Sequence[int],
 ) -> ActorCriticNetworks:
     """Create actor-critic networks for Mandl environment."""
+    # Change this to use total number of routes instead of flex routes
     num_values = jnp.full(
-        shape=(mandl._route_batch.num_flex_routes,),
+        shape=(mandl._route_batch.num_routes,),  # Use total routes instead of flex routes
         fill_value=mandl._network_data.num_nodes + 1,
         dtype=jnp.int32,
     )
     parametric_action_distribution = MultiCategoricalParametricDistribution(num_values=num_values)
 
     def actor_fn(obs: Observation) -> chex.Array:
+        # Get numbers without batch dimension
+        num_nodes = obs.network.travel_times.shape[1]  # Use shape[1] instead of shape[0]
+        num_routes = obs.routes.stops.shape[1]  # Use shape[1] instead of shape[0]
+
         torso = MandlTorso(
-            num_nodes=mandl._network_data.num_nodes,
+            num_nodes=num_nodes,
             transformer_num_blocks=transformer_num_blocks,
             transformer_num_heads=transformer_num_heads,
             transformer_key_size=transformer_key_size,
@@ -287,36 +327,33 @@ def make_actor_critic_networks_mandl(
         )
         embeddings = torso(obs)  # Shape: (B, R+2, model_size)
 
-        # Generate logits for each route
-        all_logits = hk.Linear(mandl._network_data.num_nodes + 1)(
-            embeddings
-        )  # Shape: (B, R+2, num_nodes+1)
+        # Extract route embeddings (skip network and passenger embeddings)
+        route_embeddings = embeddings[:, 1 : 1 + num_routes]  # Shape: (B, R, model_size)
 
-        # Extract logits for all flexible routes
-        flex_route_start = 1 + jnp.sum(
-            obs.routes.types != RouteType.FLEXIBLE
-        )  # 1 for network embedding
-        flex_routes_logits = jax.lax.dynamic_slice(
-            all_logits,
-            start_indices=(0, flex_route_start, 0),
-            slice_sizes=(all_logits.shape[0], mandl.num_flex_routes, all_logits.shape[2]),
-        )  # Shape: (B, num_flex_routes, num_nodes+1)
+        # Project each route embedding to its action logits
+        logits = hk.Linear(num_nodes + 1)(route_embeddings)  # Shape: (B, R, num_nodes+1)
 
-        # Apply action mask before scaling
-        masked_logits = jnp.where(
-            obs.action_mask,  # Shape: (B, num_flex_routes, num_nodes+1)
-            flex_routes_logits,
-            -1e9,  # Large negative value for invalid actions
-        )
+        # Add batch dimension to mask if needed
+        action_mask = obs.action_mask
+        if action_mask.ndim < logits.ndim:
+            action_mask = action_mask[None, ...]
+
+        # Apply mask with broadcasting
+        masked_logits = jnp.where(action_mask, logits, jnp.full_like(logits, -1e9))
 
         # Scale masked logits
         scaled_logits = 10 * jnp.tanh(masked_logits)
 
+        # Reshape to have a leading 1 dimension that can be squeezed
+        # and ensure the result will be (num_routes,)
+        # scaled_logits = scaled_logits.reshape(1, num_routes, -1)  # Shape: (1, R, num_nodes+1)
+
         return scaled_logits
 
     def critic_fn(obs: Observation) -> chex.Array:
+        num_nodes = obs.network.is_terminal.shape[0]
         torso = MandlTorso(
-            num_nodes=mandl._network_data.num_nodes,
+            num_nodes=num_nodes,
             transformer_num_blocks=transformer_num_blocks,
             transformer_num_heads=transformer_num_heads,
             transformer_key_size=transformer_key_size,

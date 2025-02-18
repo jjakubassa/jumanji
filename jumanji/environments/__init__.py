@@ -51,6 +51,8 @@ from jumanji.environments.routing.cleaner.env import Cleaner
 from jumanji.environments.routing.connector.env import Connector
 from jumanji.environments.routing.cvrp.env import CVRP
 from jumanji.environments.routing.lbf.env import LevelBasedForaging
+
+# from jumanji.environments.routing.mandl.env import Mandl
 from jumanji.environments.routing.maze.env import Maze
 from jumanji.environments.routing.mmst.env import MMST
 from jumanji.environments.routing.multi_cvrp.env import MultiCVRP

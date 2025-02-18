@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from jumanji.environments.routing.mandl import Mandl
+from jumanji.environments.routing.mandl.env import Mandl
 from jumanji.environments.routing.mandl.types import (
     Fleet,
     NetworkData,

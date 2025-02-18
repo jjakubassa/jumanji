@@ -59,10 +59,10 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
     def __init__(
         self,
         viewer: Optional[Viewer] = None,
-        network_name: Literal["mandl1", "ceder1"] = "ceder1",
+        network_name: Literal["mandl1", "ceder1"] = "mandl1",
         runtime: float = 100.0,
         vehicle_capacity: int = 20,
-        num_flex_routes: int = 0,
+        num_flex_routes: int = 50,
     ) -> None:
         self.network_name: Final = network_name
         self.runtime: Final = runtime
@@ -78,7 +78,9 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         self.max_route_length = max(len(route) for route in self._routes)
 
         # Create static components once
-        self._route_batch = create_initial_routes(self._routes)
+        self._route_batch = create_initial_routes(
+            self._routes, num_flex_routes=self.num_flex_routes
+        )
         self._initial_fleet = create_initial_fleet(
             self._routes,
             self._vehicles_per_route,
@@ -145,8 +147,10 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         state = assign_passengers(state)
 
         # 7. Calculate reward based on state transition
-        # For now, simple reward: number of completed passengers
-        reward = jnp.sum(state.passengers.statuses == PassengerStatus.COMPLETED)
+        # Negative reward based on waiting and in-vehicle times
+        reward = -jnp.sum(
+            state.passengers.time_waiting + state.passengers.time_in_vehicle, dtype=jnp.float32
+        )
 
         # 8. Check if episode is done
         done = self._is_done(state)
@@ -279,7 +283,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 maximum=self.runtime,
             ),
             action_mask=specs.BoundedArray(
-                shape=(self._route_batch.num_flex_routes, num_nodes + 1),
+                shape=(self._route_batch.num_routes, num_nodes + 1),
                 dtype=bool,
                 minimum=False,
                 maximum=True,
@@ -296,7 +300,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         - Or perform no-op (num_nodes)
         """
         return specs.BoundedArray(
-            shape=(self._route_batch.num_flex_routes,),  # One action per flexible route
+            shape=(self._route_batch.num_routes,),  # One action per flexible route
             dtype=jnp.int32,
             minimum=0,  # First node index
             maximum=self._network_data.num_nodes,  # num_nodes is no-op action
@@ -344,33 +348,52 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
     def get_action_mask(
         self,
         state: State,
-    ) -> Bool[Array, "num_flex_routes num_nodes_plus_one"]:
-        last_stops = self.get_last_stops_flex_routes(state.routes)  # Shape: (num_flex_routes,)
-        num_nodes = state.network.travel_times.shape[0]
+    ) -> Bool[Array, "num_routes num_nodes_plus_one"]:
+        """Get action mask for all routes.
 
-        # Create an initial action mask with shape: (num_flex_routes, num_nodes + 1)
-        action_mask = jnp.zeros((self.num_flex_routes, num_nodes + 1), dtype=bool)
+        For fixed routes, only allow no-op action.
+        For flexible routes, allow connected nodes and no-op.
+        """
+        last_stops = get_last_stops(state.routes)  # Shape: (num_routes,)
+        num_nodes = state.network.travel_times.shape[0]
+        num_routes = state.routes.stops.shape[0]
+
+        # Create an initial action mask with shape: (num_routes, num_nodes + 1)
+        action_mask = jnp.zeros((num_routes, num_nodes + 1), dtype=bool)
 
         node_indices = jnp.arange(num_nodes)  # Shape: (num_nodes,)
 
-        # Compute connected nodes for flex routes.
-        # This creates a (num_flex_routes, num_nodes) boolean matrix.
+        # Compute connected nodes for all routes
+        # This creates a (num_routes, num_nodes) boolean matrix
         connected_nodes = is_connected(state.network, last_stops[:, None], node_indices[None, :])
 
-        # Exclude the last stop from the allowed actions.
+        # Exclude the last stop from the allowed actions
         is_not_last_stop = last_stops[:, None] != node_indices[None, :]
-        connected_nodes = connected_nodes & is_not_last_stop  # Element-wise logical AND
+        connected_nodes = connected_nodes & is_not_last_stop
 
-        # Always allow the no-op action (e.g. "do nothing") indicated by the extra column.
-        no_op = jnp.ones((self.num_flex_routes, 1), dtype=bool)
+        # Always allow the no-op action
+        no_op = jnp.ones((num_routes, 1), dtype=bool)
 
-        # Concatenate the connected_nodes with the no_op to form the full action_mask.
+        # Combine connected nodes with no-op
         allowed_actions = jnp.concatenate([connected_nodes, no_op], axis=1)
 
-        # For routes where last_stops == -1 (e.g., routes that are "initial"),
-        # we allow all actions.
+        # For routes where last_stops == -1, allow all actions
         initial_routes = (last_stops == -1)[:, None]
         all_actions = jnp.ones_like(allowed_actions, dtype=bool)
-        action_mask = jnp.where(initial_routes, all_actions, allowed_actions)
 
+        # For fixed routes, only allow no-op
+        is_fixed_route = (state.routes.types == RouteType.FIXED)[:, None]
+        fixed_route_mask = jnp.zeros_like(allowed_actions)
+        fixed_route_mask = fixed_route_mask.at[:, -1].set(True)  # Only no-op allowed
+
+        # Combine all masks
+        action_mask = jnp.where(
+            is_fixed_route,
+            fixed_route_mask,  # Fixed routes: only no-op
+            jnp.where(
+                initial_routes,
+                all_actions,  # Initial routes: all actions
+                allowed_actions,  # Other cases: connected nodes + no-op
+            ),
+        )
         return action_mask

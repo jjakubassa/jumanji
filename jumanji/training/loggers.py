@@ -219,7 +219,7 @@ class NeptuneLogger(Logger):
         save_checkpoint: bool = False,
     ):
         super().__init__(save_checkpoint=save_checkpoint)
-        self.run = neptune.init_run(project=project, name=name)
+        self.run = neptune.init_run(project="jaku/thesis")
         self.run["config"] = cfg
         self._env_steps = 0.0
 

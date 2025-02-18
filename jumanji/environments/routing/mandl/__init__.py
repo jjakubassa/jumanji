@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from jumanji.environments.routing.mandl.env import Mandl
-from jumanji.environments.routing.mandl.types import (
+from .env import Mandl
+from .types import (
     Fleet,
     Metrics,
     NetworkData,
@@ -28,6 +28,7 @@ from jumanji.environments.routing.mandl.types import (
     assign_passengers,
     calculate_journey_times,
     calculate_route_times,
+    find_best_transfer_route,
     get_last_stops,
     get_travel_time,
     get_valid_stops,
@@ -41,9 +42,11 @@ from jumanji.environments.routing.mandl.types import (
     update_passengers_to_waiting,
     update_routes,
 )
+from .utils import VehicleDirection
 
 __all__ = [
     "Fleet",
+    "Mandl",
     "Metrics",
     "NetworkData",
     "Observation",
@@ -52,11 +55,13 @@ __all__ = [
     "RouteBatch",
     "RouteType",
     "State",
+    "VehicleDirection",
     "_update_completed_vehicles",
     "add_passenger",
     "assign_passengers",
     "calculate_journey_times",
     "calculate_route_times",
+    "find_best_transfer_route",
     "get_last_stops",
     "get_travel_time",
     "get_valid_stops",

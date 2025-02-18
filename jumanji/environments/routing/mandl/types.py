@@ -182,7 +182,7 @@ class Observation:
     desired_departure_times: Float[Array, " num_passengers"]
     passenger_statuses: Int[Array, " num_passengers"]
     current_time: Float[Array, ""]
-    action_mask: Bool[Array, "{self.routes.num_flex_routes} {self.netwowrk.num_nodes+1}"]
+    action_mask: Bool[Array, "num_routes {self.netwowrk.num_nodes+1}"]
 
 
 @dataclass
@@ -239,8 +239,8 @@ def update_routes(
     routes: RouteBatch, num_nodes: Int[Array, ""], action: Int[Array, " NumVehicles"]
 ) -> RouteBatch:
     # find indices of first free stop (-1) in route
-    stop_planned = routes.stops != -1
-    next_free_stop = (stop_planned).argmin(axis=1)
+    stop_planned: Bool[Array, " max_route_length"] = routes.stops != -1
+    next_free_stop: Int[Array, " num_routes"] = (stop_planned).argmin(axis=1)
 
     # handle do nothing actions
     no_op_mask = action == num_nodes

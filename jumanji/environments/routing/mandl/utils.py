@@ -319,7 +319,7 @@ def create_initial_fleet(
     return fleet
 
 
-def create_initial_routes(routes: list[list[int]]) -> RouteBatch:
+def create_initial_routes(routes: list[list[int]], num_flex_routes: int) -> RouteBatch:
     """Create initial routes based on solution routes."""
     print("\nDEBUG: Creating initial routes:")
     print(f"Number of input routes: {len(routes)}")
@@ -343,7 +343,7 @@ def create_initial_routes(routes: list[list[int]]) -> RouteBatch:
         types=jnp.full(num_routes, RouteType.FIXED, dtype=jnp.int32),
         stops=jnp.array(padded_routes, dtype=jnp.int32),
         frequencies=jnp.ones(num_routes, dtype=jnp.float32),
-        num_flex_routes=jnp.array(0),
+        num_flex_routes=jnp.array(num_flex_routes),
         num_fix_routes=jnp.array(num_routes),
     )
 
