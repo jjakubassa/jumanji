@@ -12,23 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# %% imports
 import jax
 import matplotlib.pyplot as plt
 import tqdm
 
 from jumanji.environments.routing.mandl import Mandl
-from jumanji.environments.routing.mandl.types import PassengerStatus
+from jumanji.environments.routing.mandl.types import PassengerStatus, State
 
 # jax.config.update("jax_disable_jit", True)
 
 
-def main() -> None:
+# %%
+def main() -> State:
     # Enable interactive mode for real-time plotting
     plt.ion()
 
     # Create environment
-    n_steps = 30_000
-    env = Mandl(network_name="mandl1", runtime=n_steps, vehicle_capacity=50)
+    n_steps = 24 * 60 + 200
+    env = Mandl(network_name="mandl1", runtime=200, vehicle_capacity=50)
 
     # Reset environment and get initial state
     key = jax.random.PRNGKey(42)
@@ -74,7 +76,7 @@ def main() -> None:
     # states = [state]
     step = jax.jit(env.step)
 
-    for i in tqdm.tqdm(range(n_steps * 2)):
+    for i in tqdm.tqdm(range(n_steps)):
         # For now, just use dummy action (no-op for all flexible routes)
         action = jax.numpy.full(
             state.routes.num_routes,
@@ -104,6 +106,13 @@ def main() -> None:
             + f"{(state.passengers.statuses == PassengerStatus.COMPLETED).sum()}"
         )
 
+        print(f"Sum of waiting times: {state.passengers.time_waiting.sum():.2f}")
+        print(f"Sum of in-vehicle times: {state.passengers.time_in_vehicle.sum():.2f}")
+        print(
+            "Total Travel time:"
+            f"{state.passengers.time_in_vehicle.sum() + state.passengers.time_waiting.sum():.2f}"
+        )
+
         # Render every few steps
         # if (i + 1) % 3 == 0:
         #     env.render(state)
@@ -118,6 +127,52 @@ def main() -> None:
 
     # print("\nDemo completed! Check 'mandl_simulation.gif' for the animation.")
 
+    return state
 
-if __name__ == "__main__":
-    main()
+
+state = main()
+
+# %%
+# Print timing statistics
+print("\nPassenger Statistics:")
+print(f"Number of passengers: {state.passengers.num_passengers}")
+print(f"Average waiting time: {state.passengers.time_waiting.mean():.2f}")
+print(f"Average in-vehicle time: {state.passengers.time_in_vehicle.mean():.2f}")
+print(
+    "Average total time:"
+    + f"{(state.passengers.time_waiting + state.passengers.time_in_vehicle).mean():.2f}"
+)
+print(f"Maximum waiting time: {state.passengers.time_waiting.max():.2f}")
+print(f"Maximum in-vehicle time: {state.passengers.time_in_vehicle.max():.2f}")
+print(f"Sum of waiting times: {state.passengers.time_waiting.sum():.2f}")
+print(f"Sum of in-vehicle times: {state.passengers.time_in_vehicle.sum():.2f}")
+print(
+    "Total Travel time: "
+    + f"{state.passengers.time_in_vehicle.sum() + state.passengers.time_waiting.sum():.2f}"
+)
+
+# %%
+# Create figure for histograms
+plt.figure(figsize=(12, 5))
+
+# Plot waiting time distribution
+plt.subplot(1, 2, 1)
+plt.hist(state.passengers.time_waiting, bins=30, alpha=0.75)
+plt.title("Distribution of Waiting Times")
+plt.xlabel("Waiting Time")
+plt.ylabel("Frequency")
+
+# Plot in-vehicle time distribution
+plt.subplot(1, 2, 2)
+plt.hist(state.passengers.time_in_vehicle, bins=30, alpha=0.75)
+plt.title("Distribution of In-Vehicle Times")
+plt.xlabel("In-Vehicle Time")
+plt.ylabel("Frequency")
+
+plt.tight_layout()
+plt.show()
+
+# %%
+print("\nPassenger Transfer Statistics:")
+print(f"Number of transfers: {state.passengers.has_transferred.sum()}")
+print(f"Average transfers per passenger: {state.passengers.has_transferred.mean():.2f}")

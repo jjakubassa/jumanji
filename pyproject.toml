@@ -94,6 +94,7 @@ ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100
+exclude = ["jumanji/environments/routing/mandl/demo_notebook.py"]
 
 [tool.ruff.lint]
 select = ["A", "B", "E", "F", "I", "N", "W", "RUF", "ANN"]
