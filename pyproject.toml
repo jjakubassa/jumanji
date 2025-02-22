@@ -63,6 +63,7 @@ strict_optional = true
 strict_equality = true
 explicit_package_bases = true
 follow_imports = "skip"
+exclude = ["jumanji/environments/routing/mandl/demo_notebook.py"]
 
 [[tool.mypy.overrides]]
 module = [

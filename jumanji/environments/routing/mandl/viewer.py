@@ -53,6 +53,10 @@ class MandlViewer(Viewer):
         self._name = name
         self._animation: Optional[animation.Animation] = None
         self._network_data: Optional[NetworkData] = None
+        self._cached_bus_icons: dict[float, np.ndarray] = {}  # Cache for rotated bus icons
+
+        with resources.path("jumanji.environments.routing.mandl.assets", self.ICON_PATH) as path:
+            self._original_bus_icon = mpimg.imread(str(path))
 
         self._display: Callable[[plt.Figure], Optional[np.ndarray]]
         if render_mode == "rgb_array":
@@ -317,7 +321,6 @@ class MandlViewer(Viewer):
 
         # Calculate angle based on direction of travel
         if start_node == end_node:
-            # Vehicle is at a node, use previous angle or default
             angle = 0
         else:
             from_pos = state.network.node_coordinates[start_node]
@@ -330,11 +333,8 @@ class MandlViewer(Viewer):
             if fleet.directions[vehicle_idx] == VehicleDirection.BACKWARDS:
                 angle += 180
 
-        # Load the bus icon and rotate it
-        with resources.path("jumanji.environments.routing.mandl.assets", self.ICON_PATH) as path:
-            bus_icon = mpimg.imread(str(path))
-            bus_icon = rotate(bus_icon, angle, reshape=False, mode="nearest")
-            bus_icon = np.clip(bus_icon, 0, 1)
+        # Get the rotated bus icon from cache
+        bus_icon = self._get_rotated_bus_icon(float(angle))
 
         # Plot the rotated bus icon
         ax.imshow(
@@ -361,6 +361,17 @@ class MandlViewer(Viewer):
                 va="bottom",
                 zorder=5,
             )
+
+    def _get_rotated_bus_icon(self, angle: float) -> np.ndarray:
+        """Get a rotated bus icon from cache or create new one."""
+        if angle not in self._cached_bus_icons:
+            # Create a copy of the original image and rotate it
+            rotated_icon = rotate(
+                np.copy(self._original_bus_icon), angle, reshape=False, mode="nearest"
+            )
+            rotated_icon = np.clip(rotated_icon, 0, 1)
+            self._cached_bus_icons[angle] = rotated_icon
+        return self._cached_bus_icons[angle]
 
     def display_human(self, fig: plt.Figure) -> None:
         """Display the figure in human-readable format."""
