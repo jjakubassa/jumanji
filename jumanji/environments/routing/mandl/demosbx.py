@@ -21,10 +21,10 @@ import numpy as np
 from gymnasium import spaces
 from numpy.typing import NDArray
 from sbx import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 
-import jumanji
 from jumanji import Environment
+from jumanji.environments.routing.mandl import Mandl
 from jumanji.wrappers import JumanjiToGymWrapper
 
 
@@ -140,7 +140,7 @@ def make_env(rank: int) -> Callable[[], gym.Env]:
     """
 
     def _init() -> gym.Env:
-        env = jumanji.make("Mandl-v0")
+        env = Mandl(network_name="ceder1", num_flex_routes=16)
         env = JumanjiToGymWrapper(env)
         env.render_mode = "rgb_array"
         env = FlattenDictWrapper(env)
@@ -171,6 +171,7 @@ def main() -> None:
     num_envs = os.cpu_count() or 4  # Use number of CPU cores, fallback to 4
     vec_env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
     vec_env = VecMonitor(vec_env)
+    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True)
 
     print(f"\nCreated {num_envs} parallel environments")
 
@@ -182,8 +183,9 @@ def main() -> None:
         n_steps=2048 // num_envs,  # Adjust batch size for multiple envs
         batch_size=64,
         learning_rate=3e-4,
+        tensorboard_log=f"outputs/{test_env.unwrapped.network_name}",
         policy_kwargs={
-            "net_arch": dict(pi=[64, 64], vf=[64, 64]),
+            "net_arch": dict(pi=[256, 256], vf=[256, 256]),
             "normalize_images": False,
         },
         device="cpu",

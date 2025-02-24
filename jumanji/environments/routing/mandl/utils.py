@@ -102,32 +102,34 @@ def load_network_data(network_name: str) -> NetworkData:
 
 
 def create_initial_passengers(
-    demand_data: pd.DataFrame, key: chex.PRNGKey, runtime: float = 60.0
+    demand_data: pd.DataFrame, key: chex.PRNGKey, runtime: float = 60.0, deterministic: bool = True
 ) -> Passengers:
-    """Create initial passengers based on demand data with uniformly distributed departure times."""
-    # Create list of passengers based on demand
+    """
+    Create initial passengers based on demand data with deterministic or random departure times.
+    """
     origins = []
     destinations = []
 
-    # For each OD pair in demand, create that many passengers
     for _, row in demand_data.iterrows():
         num_passengers = int(row["demand"])
-        # Convert from 1-based to 0-based indexing
         origin = int(row["from"]) - 1
         destination = int(row["to"]) - 1
 
         origins.extend([origin] * num_passengers)
         destinations.extend([destination] * num_passengers)
 
-    # Convert to arrays
     origins = jnp.array(origins, dtype=jnp.int32)
     destinations = jnp.array(destinations, dtype=jnp.int32)
     num_passengers = len(origins)
 
-    # Generate uniformly distributed departure times
-    desired_departure_times = jax.random.uniform(
-        key, shape=(num_passengers,), minval=0.0, maxval=runtime
-    )
+    if deterministic:
+        # Evenly space departure times
+        desired_departure_times = jnp.linspace(0.0, runtime * 0.8, num_passengers)
+    else:
+        # uniform random departure times
+        desired_departure_times = jax.random.uniform(
+            key, shape=(num_passengers,), minval=0.0, maxval=runtime
+        )
 
     # Sort passengers by departure time
     sort_indices = jnp.argsort(desired_departure_times)
@@ -135,7 +137,6 @@ def create_initial_passengers(
     destinations = destinations[sort_indices]
     desired_departure_times = desired_departure_times[sort_indices]
 
-    # Initialize other passenger attributes
     time_waiting = jnp.zeros(num_passengers)
     time_in_vehicle = jnp.full(num_passengers, -1.0)
     statuses = jnp.full(num_passengers, PassengerStatus.NOT_IN_SYSTEM)
