@@ -14,10 +14,13 @@
 
 import multiprocessing
 import os
-from typing import Any, Callable, Dict, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Literal, Tuple
 
 import gymnasium as gym
 import numpy as np
+import submitit
+import tyro
 from gymnasium import spaces
 from numpy.typing import NDArray
 from sbx import PPO
@@ -133,14 +136,16 @@ class FlattenDictWrapper(gym.Wrapper):
         return self._flatten_obs(obs), reward, terminated, truncated, info
 
 
-def make_env(rank: int) -> Callable[[], gym.Env]:
+def make_env(
+    rank: int, network_name: Literal["mandl1", "ceder1"], num_flex_routes: int
+) -> Callable[[], gym.Env]:
     """
     Creates a function that creates an environment.
     This is needed for SubprocVecEnv to properly handle environment creation in separate processes.
     """
 
     def _init() -> gym.Env:
-        env = Mandl(network_name="ceder1", num_flex_routes=16)
+        env = Mandl(network_name=network_name, num_flex_routes=num_flex_routes)
         env = JumanjiToGymWrapper(env)
         env.render_mode = "rgb_array"
         env = FlattenDictWrapper(env)
@@ -149,66 +154,193 @@ def make_env(rank: int) -> Callable[[], gym.Env]:
     return _init
 
 
-def main() -> None:
-    # Create and test a single environment first
-    test_env = make_env(0)()
+@dataclass
+class TrainingConfig:
+    """Configuration for training a PPO agent on the Mandl environment."""
 
-    # Print action space information
-    print("\nAction Space Information:")
-    print(f"Action Space: {test_env.action_space}")
-    print(f"Action Space Shape: {test_env.action_space.shape}")
-    print(f"Action Space Sample: {test_env.action_space.sample()}")
-    print("\nObservation Space Information:")
-    print(f"Observation Space: {test_env.observation_space}")
-    print(f"Observation Space Shape: {test_env.observation_space.shape}")
+    # Environment configuration
+    network_name: Literal["ceder1", "mandl1"] = "ceder1"
+    num_flex_routes: int = 16
 
-    # Test reset and action
-    obs, _ = test_env.reset()
-    print("\nObservation shape:", obs.shape)
-    test_env.close()
+    # Training configuration
+    total_timesteps: int = int(1e6)
+    learning_rate: float = 3e-4
+    batch_size: int = 64
+    n_steps: int = 2048 * 4  # Will be adjusted by num_envs
 
-    # Create multiple environments in parallel
-    num_envs = os.cpu_count() or 4  # Use number of CPU cores, fallback to 4
-    vec_env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
-    vec_env = VecMonitor(vec_env)
-    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True)
+    # Model configuration
+    policy: str = "MlpPolicy"
+    hidden_size: int = 256
+    n_layers: int = 2
+    device: Literal["cpu", "cuda", "auto"] = "auto"
 
-    print(f"\nCreated {num_envs} parallel environments")
+    # Environment parallelism
+    num_envs: int = -1  # If -1, will use CPU count
 
-    # Create and train model
-    model = PPO(
-        "MlpPolicy",
-        vec_env,
-        verbose=1,
-        n_steps=2048 // num_envs,  # Adjust batch size for multiple envs
-        batch_size=64,
-        learning_rate=3e-4,
-        tensorboard_log=f"outputs/{test_env.unwrapped.network_name}",
-        policy_kwargs={
-            "net_arch": dict(pi=[256, 256], vf=[256, 256]),
-            "normalize_images": False,
-        },
-        device="cpu",
-    )
+    # Output configuration
+    output_dir: str = "outputs"
+    model_name: str = "ppo_mandl"
 
-    try:
-        print(f"\n=== Starting training with {num_envs} parallel environments ===")
-        model.learn(total_timesteps=int(1e6), progress_bar=True, log_interval=1)
+    # Submitit configuration (for SLURM)
+    use_slurm: bool = False
+    slurm_partition: Literal[
+        "dev_single",
+        "single",
+        "dev_multiple",
+        "multiple",
+        "fat",
+        "dev_gpu_4",
+        "gpu_4",
+        "gpu_8",
+        "dev_multiple_i",
+        "multiple_il",
+        "dev_gpu_4_a100",
+        "gpu_4_a100",
+        "gpu_4_h100",
+    ] = "single"
+    slurm_job_name: str = "mandl_ppo"
+    slurm_comment: str = "PPO training on Mandl environment"
+    slurm_gpus_per_node: int = 0
+    slurm_cpus_per_task: int = 80
+    slurm_time: int = 60 * 12  # minutes
 
-        # Save the model
-        model.save("ppo_mandl")
 
-    except Exception as e:
-        print(f"\nError during training: {e}")
-        print("\nStack trace:")
-        import traceback
+class Trainer:
+    def __init__(self, config: TrainingConfig):
+        self.config = config
 
-        traceback.print_exc()
-    finally:
-        vec_env.close()
+        # Set up number of environments
+        if self.config.num_envs == -1:
+            self.config.num_envs = os.cpu_count() or 4
+
+        # Create output directory
+        os.makedirs(self.config.output_dir, exist_ok=True)
+
+        # Adjust batch size for parallel environments
+        self.config.n_steps = self.config.n_steps // self.config.num_envs
+
+    def __call__(self) -> str:
+        return self.train()
+
+    def train(self) -> str:
+        """Train the agent and return the path to the saved model."""
+        # Create and test a single environment first
+        test_env = make_env(0, self.config.network_name, self.config.num_flex_routes)()
+
+        # Print action space information
+        print("\nAction Space Information:")
+        print(f"Action Space: {test_env.action_space}")
+        print(f"Action Space Shape: {test_env.action_space.shape}")
+        print(f"Action Space Sample: {test_env.action_space.sample()}")
+        print("\nObservation Space Information:")
+        print(f"Observation Space: {test_env.observation_space}")
+        print(f"Observation Space Shape: {test_env.observation_space.shape}")
+
+        # Test reset and action
+        obs, _ = test_env.reset()
+        print("\nObservation shape:", obs.shape)
+        test_env.close()
+
+        # Create multiple environments in parallel
+        vec_env = SubprocVecEnv(
+            [
+                make_env(i, self.config.network_name, self.config.num_flex_routes)
+                for i in range(self.config.num_envs)
+            ]
+        )
+        vec_env = VecMonitor(vec_env)
+        vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True)
+
+        print(f"\nCreated {self.config.num_envs} parallel environments")
+
+        # Set up network architecture
+        net_arch = {
+            "pi": [self.config.hidden_size] * self.config.n_layers,
+            "vf": [self.config.hidden_size] * self.config.n_layers,
+        }
+
+        # Create tensorboard log directory
+        tensorboard_log = os.path.join(self.config.output_dir, test_env.unwrapped.network_name)
+
+        # Create and train model
+        model = PPO(
+            self.config.policy,
+            vec_env,
+            verbose=1,
+            n_steps=self.config.n_steps,
+            batch_size=self.config.batch_size,
+            learning_rate=self.config.learning_rate,
+            tensorboard_log=tensorboard_log,
+            policy_kwargs={
+                "net_arch": net_arch,
+                "normalize_images": False,
+            },
+            device=self.config.device,
+        )
+
+        try:
+            print(f"\n=== Starting training with {self.config.num_envs} parallel environments ===")
+            model.learn(
+                total_timesteps=self.config.total_timesteps, progress_bar=True, log_interval=1
+            )
+
+            # Save the model
+            model_path = os.path.join(self.config.output_dir, f"{self.config.model_name}.zip")
+            model.save(model_path)
+            print(f"Model saved to {model_path}")
+
+            return model_path
+
+        except Exception as e:
+            print(f"\nError during training: {e}")
+            print("\nStack trace:")
+            import traceback
+
+            traceback.print_exc()
+            return "Training failed"
+        finally:
+            vec_env.close()
+
+
+def main(config: TrainingConfig) -> None:
+    """Main function to handle either direct execution or SLURM submission."""
+    # Required for multiprocessing on Windows and macOS
+    multiprocessing.set_start_method("spawn")
+
+    if config.use_slurm:
+        # Submit the job to SLURM
+        executor = submitit.AutoExecutor(folder=os.path.join(config.output_dir, "slurm_logs"))
+        executor.update_parameters(
+            slurm_partition=config.slurm_partition,
+            name=config.slurm_job_name,
+            slurm_comment=config.slurm_comment,
+            gpus_per_node=config.slurm_gpus_per_node,
+            cpus_per_task=config.slurm_cpus_per_task,
+            slurm_time=config.slurm_time,
+            slurm_mem="160G",
+        )
+
+        # Adjust num_envs based on SLURM allocated CPUs
+        if config.num_envs is None:
+            config.num_envs = config.slurm_cpus_per_task
+
+        trainer = Trainer(config)
+        job = executor.submit(trainer)
+
+        print(f"Submitted job {job.job_id}")
+        print(f"To check status: squeue -j {job.job_id}")
+        print("To cancel: scancel", job.job_id)
+
+        # Optional: wait for completion
+        # model_path = job.result()
+        # print(f"Training completed. Model saved to: {model_path}")
+    else:
+        # Run directly
+        trainer = Trainer(config)
+        model_path = trainer.train()
+        print(f"Training completed. Model saved to: {model_path}")
 
 
 if __name__ == "__main__":
-    # Required for multiprocessing on Windows and macOS
-    multiprocessing.set_start_method("spawn")
-    main()
+    config = tyro.cli(TrainingConfig)
+    main(config)

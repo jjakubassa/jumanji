@@ -64,10 +64,14 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         vehicle_capacity: int = 20,
         num_flex_routes: int = 16,
         max_route_length: int = 16,
+        passenger_init_mode: Literal[
+            "evenly_spaced", "rush_hour", "uniform_random", "all_at_start"
+        ] = "evenly_spaced",
     ) -> None:
         self.network_name: Final = network_name
         self.runtime: Final = runtime
         self.num_flex_routes: Final = num_flex_routes
+        self.passenger_init_mode: Final = passenger_init_mode
         self._viewer = viewer or MandlViewer(
             name="Mandl",
             render_mode="human",
@@ -107,7 +111,9 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         initial_state = State(
             network=self._network_data,
             fleet=self._initial_fleet,
-            passengers=create_initial_passengers(self._demand_data, key, runtime=self.runtime),
+            passengers=create_initial_passengers(
+                self._demand_data, key, runtime=self.runtime, mode=self.passenger_init_mode
+            ),
             routes=self._route_batch,
             current_time=jnp.array(0.0),
             key=key,

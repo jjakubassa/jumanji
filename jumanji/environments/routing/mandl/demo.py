@@ -30,7 +30,14 @@ def main() -> State:
 
     # Create environment
     n_steps = 24 * 60 + 200
-    env = Mandl(network_name="mandl1", runtime=200, vehicle_capacity=50)
+    env = Mandl(
+        network_name="mandl1",
+        runtime=24 * 60,
+        vehicle_capacity=50,
+        num_flex_routes=0,
+        max_route_length=0,
+        passenger_init_mode="evenly_spaced",
+    )
 
     # Reset environment and get initial state
     key = jax.random.PRNGKey(42)
@@ -169,7 +176,10 @@ plt.title("Distribution of In-Vehicle Times")
 plt.xlabel("In-Vehicle Time")
 plt.ylabel("Frequency")
 
+# Show and save the histogram figure
 plt.tight_layout()
+plt.savefig("passenger_time_distributions.png", dpi=300, bbox_inches="tight")
+print("Saved passenger time distributions to passenger_time_distributions.png")
 plt.show()
 
 # %%

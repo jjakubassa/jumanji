@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from importlib import resources
+from typing import Literal
 
 import chex
 import jax
@@ -102,7 +103,11 @@ def load_network_data(network_name: str) -> NetworkData:
 
 
 def create_initial_passengers(
-    demand_data: pd.DataFrame, key: chex.PRNGKey, runtime: float = 60.0, deterministic: bool = True
+    demand_data: pd.DataFrame,
+    key: chex.PRNGKey,
+    runtime: float = 60.0,
+    deterministic: bool = True,
+    mode: Literal["evenly_spaced", "rush_hour", "uniform_random", "all_at_start"] = "evenly_spaced",
 ) -> Passengers:
     """
     Create initial passengers based on demand data with deterministic or random departure times.
@@ -122,14 +127,49 @@ def create_initial_passengers(
     destinations = jnp.array(destinations, dtype=jnp.int32)
     num_passengers = len(origins)
 
-    if deterministic:
+    if mode == "evenly_spaced":
         # Evenly space departure times
         desired_departure_times = jnp.linspace(0.0, runtime * 0.8, num_passengers)
-    else:
+    elif mode == "rush_hour":
+        # Create a bimodal distribution with two Gaussian components
+        # Key parameters for morning and evening rush hours
+
+        # Morning rush: centered at 25% of runtime
+        morning_center = runtime * 0.25
+        morning_std = runtime * 0.07  # Spread of morning rush
+
+        # Evening rush: centered at 70% of runtime
+        evening_center = runtime * 0.70
+        evening_std = runtime * 0.09  # Evening rush typically has a wider spread
+
+        # Relative weights - morning rush is typically heavier
+        morning_weight = 0.6  # 60% of passengers in morning rush
+
+        # Determine which rush hour each passenger belongs to
+        is_morning_commuter = (
+            jax.random.uniform(jax.random.split(key)[0], (num_passengers,)) < morning_weight
+        )
+
+        # Generate normal distributions for each rush hour
+        morning_noise = jax.random.normal(jax.random.split(key)[1], (num_passengers,)) * morning_std
+        evening_noise = jax.random.normal(jax.random.split(key)[2], (num_passengers,)) * evening_std
+
+        # Combine into final distribution
+        morning_times = morning_center + morning_noise
+        evening_times = evening_center + evening_noise
+        desired_departure_times = jnp.where(is_morning_commuter, morning_times, evening_times)
+
+        # Ensure times are within valid range
+        desired_departure_times = jnp.clip(desired_departure_times, 0.0, runtime)
+    elif mode == "uniform_random":
         # uniform random departure times
         desired_departure_times = jax.random.uniform(
             key, shape=(num_passengers,), minval=0.0, maxval=runtime
         )
+    elif mode == "all_at_start":
+        desired_departure_times = jnp.zeros(num_passengers, dtype=jnp.float32)
+    else:
+        raise NotImplementedError
 
     # Sort passengers by departure time
     sort_indices = jnp.argsort(desired_departure_times)
