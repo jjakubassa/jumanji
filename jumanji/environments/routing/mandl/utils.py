@@ -12,6 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Copyright 2022 InstaDeep Ltd. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the Licensxe is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from importlib import resources
 from typing import Literal
 
@@ -127,9 +141,17 @@ def create_initial_passengers(
     destinations = jnp.array(destinations, dtype=jnp.int32)
     num_passengers = len(origins)
 
+    # Split the key for different random operations
+    key, shuffle_key = jax.random.split(key)
+
+    # Shuffle the OD pairs together
+    shuffle_indices = jax.random.permutation(shuffle_key, num_passengers)
+    origins = origins[shuffle_indices]
+    destinations = destinations[shuffle_indices]
+
     if mode == "evenly_spaced":
         # Evenly space departure times
-        desired_departure_times = jnp.linspace(0.0, runtime * 0.8, num_passengers)
+        desired_departure_times = jnp.linspace(0.0, runtime * 0.8, num_passengers, dtype=jnp.int32)
     elif mode == "rush_hour":
         # Create a bimodal distribution with two Gaussian components
         # Key parameters for morning and evening rush hours
@@ -178,7 +200,7 @@ def create_initial_passengers(
     desired_departure_times = desired_departure_times[sort_indices]
 
     time_waiting = jnp.zeros(num_passengers)
-    time_in_vehicle = jnp.full(num_passengers, -1.0)
+    time_in_vehicle = jnp.zeros(num_passengers)
     statuses = jnp.full(num_passengers, PassengerStatus.NOT_IN_SYSTEM)
 
     return Passengers(
@@ -325,7 +347,7 @@ def create_initial_fleet(
         # Distribute vehicles evenly across total time
         for vehicle_idx in range(num_vehicles):  # Use the specific number for this route
             # Calculate target time for this vehicle
-            target_time = (vehicle_idx * total_time) / num_vehicles
+            target_time = jnp.round((vehicle_idx * total_time) / num_vehicles)
 
             # Find which segment this time falls into
             segment_idx = jnp.searchsorted(cumulative_times, target_time)

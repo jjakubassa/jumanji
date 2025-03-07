@@ -26,10 +26,12 @@ from .types import (
     _update_completed_vehicles,
     add_passenger,
     assign_passengers,
-    calculate_journey_times,
     calculate_route_times,
+    calculate_waiting_times,
     find_best_transfer_route,
+    get_direction_if_connected,
     get_last_stops,
+    get_position_in_route,
     get_travel_time,
     get_valid_stops,
     handle_completed_and_transferring_passengers,
@@ -41,6 +43,7 @@ from .types import (
     step,
     update_passengers_to_waiting,
     update_routes,
+    vehicle_is_ahead_of_node,
 )
 from .utils import VehicleDirection
 
@@ -59,7 +62,6 @@ __all__ = [
     "_update_completed_vehicles",
     "add_passenger",
     "assign_passengers",
-    "calculate_journey_times",
     "calculate_route_times",
     "find_best_transfer_route",
     "get_last_stops",
@@ -74,4 +76,8 @@ __all__ = [
     "step",
     "update_passengers_to_waiting",
     "update_routes",
+    "calculate_waiting_times",
+    "vehicle_is_ahead_of_node",
+    "get_position_in_route",
+    "get_direction_if_connected",
 ]

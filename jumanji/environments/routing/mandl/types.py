@@ -133,6 +133,10 @@ class Fleet:
     def is_at_node(self) -> Bool[Array, " num_vehicles"]:
         return jnp.isclose(self.times_on_edge, 0.0)
 
+    @property
+    def num_passengers(self) -> Int[Array, " num_vehicles"]:
+        return (self.passengers != -1).sum(axis=1)
+
 
 @dataclass
 class Passengers:
@@ -318,7 +322,8 @@ def update_passengers_to_waiting(
 def increment_wait_times(passengers: Passengers) -> Passengers:
     """Increment waiting times for passengers who are waiting."""
     new_wait_times = jnp.where(
-        passengers.statuses == PassengerStatus.WAITING,
+        (passengers.statuses == PassengerStatus.WAITING)
+        | (passengers.statuses == PassengerStatus.TRANSFERRING),
         passengers.time_waiting + 1.0,
         passengers.time_waiting,
     )
@@ -462,24 +467,23 @@ def calculate_route_times(
     state: State,
 ) -> tuple[
     Float[Array, "num_routes num_nodes num_nodes"],
-    Bool[Array, "num_routes num_nodes num_nodes"],
+    Int[Array, "num_routes num_nodes num_nodes"],
 ]:
     """
     Calculate travel times between all pairs of stops for each route and track direction.
-    Returns both times and whether each time is from a forward pass (True) or backward pass
-    (False).
+    Returns both times and direction indicators (-1: no connection, 0: forward, 1: backward).
     """
     num_nodes = state.network.travel_times.shape[0]
     max_route_length = state.routes.stops.shape[1]
 
     def calculate_single_route_times(
         route: Int[Array, " max_route_length"], route_type: Int[Array, ""]
-    ) -> tuple[Float[Array, " num_nodes num_nodes"], Bool[Array, " num_nodes num_nodes"]]:
+    ) -> tuple[Float[Array, " num_nodes num_nodes"], Int[Array, " num_nodes num_nodes"]]:
         # Initialize result matrices
         result_times = jnp.full((num_nodes, num_nodes), jnp.inf)
         result_times = result_times.at[jnp.arange(num_nodes), jnp.arange(num_nodes)].set(0.0)
-        # True for forward direction, False for backward
-        result_directions = jnp.zeros((num_nodes, num_nodes), dtype=bool)
+        # -1 for no connection, 0 for forward, 1 for backward
+        result_directions = jnp.full((num_nodes, num_nodes), -1, dtype=jnp.int32)
 
         def accumulate_fn(
             i: Int[Array, ""], accumulated_times: Float[Array, " max_route_length"]
@@ -500,10 +504,8 @@ def calculate_route_times(
         # Update result matrices for each source stop
         def update_from_stop(
             i: Int[Array, ""],
-            result: tuple[
-                Float[Array, " num_nodes num_nodes"], Bool[Array, " num_nodes num_nodes"]
-            ],
-        ) -> tuple[Float[Array, " num_nodes num_nodes"], Bool[Array, " num_nodes num_nodes"]]:
+            result: tuple[Float[Array, " num_nodes num_nodes"], Int[Array, " num_nodes num_nodes"]],
+        ) -> tuple[Float[Array, " num_nodes num_nodes"], Int[Array, " num_nodes num_nodes"]]:
             times, directions = result
             src = route[i]
             is_valid_src = src >= 0
@@ -511,9 +513,9 @@ def calculate_route_times(
             def update_to_stop(
                 j: Int[Array, ""],
                 res: tuple[
-                    Float[Array, " num_nodes num_nodes"], Bool[Array, " num_nodes num_nodes"]
+                    Float[Array, " num_nodes num_nodes"], Int[Array, " num_nodes num_nodes"]
                 ],
-            ) -> tuple[Float[Array, " num_nodes num_nodes"], Bool[Array, " num_nodes num_nodes"]]:
+            ) -> tuple[Float[Array, " num_nodes num_nodes"], Int[Array, " num_nodes num_nodes"]]:
                 curr_times, curr_directions = res
                 dest = route[j]
                 is_valid_dest = dest >= 0
@@ -526,16 +528,18 @@ def calculate_route_times(
                     jnp.where(is_valid, time, curr_times[src, dest])
                 )
                 curr_directions = curr_directions.at[src, dest].set(
-                    jnp.where(is_valid, True, curr_directions[src, dest])
+                    jnp.where(is_valid, VehicleDirection.FORWARD, curr_directions[src, dest])
                 )
 
                 # For fixed routes, mirror the times with backward direction
                 is_fixed = route_type == RouteType.FIXED
-                curr_times = curr_times.at[dest, src].set(
-                    jnp.where(is_valid & is_fixed, time, curr_times[dest, src])
+                curr_times = jnp.where(
+                    is_valid & is_fixed, curr_times.at[dest, src].set(time), curr_times
                 )
-                curr_directions = curr_directions.at[dest, src].set(
-                    jnp.where(is_valid & is_fixed, False, curr_directions[dest, src])
+                curr_directions = jnp.where(
+                    is_valid & is_fixed,
+                    curr_directions.at[dest, src].set(VehicleDirection.BACKWARDS),
+                    curr_directions,
                 )
 
                 return (curr_times, curr_directions)
@@ -556,93 +560,12 @@ def calculate_route_times(
     return result
 
 
-def calculate_journey_times(
-    state: State,
-    passenger_origin: Int[Array, ""],
-    passenger_dest: Int[Array, ""],
-    route_times: Float[Array, "num_routes num_nodes num_nodes"],
-    route_directions: Bool[Array, "num_routes num_nodes num_nodes"],
-) -> Float[Array, " {state.fleet.num_vehicles}"]:
-    """Calculate journey times using pre-computed direction information."""
-    # Get vehicle data
-    route_ids = state.fleet.route_ids
-    current_positions = state.fleet.current_edges[:, 0]
-    current_destinations = state.fleet.current_edges[:, 1]
-    current_directions = state.fleet.directions
-
-    # Going wrong direction if current direction doesn't match required direction
-    going_wrong_direction = (
-        current_directions != route_directions[route_ids, current_positions, passenger_origin]
-    )
-
-    # Find last valid stop for each route
-    route_lengths = (state.routes.stops[route_ids] != -1).sum(axis=1)
-    last_valid_indices = route_lengths - 1
-    first_valid_indices = jnp.zeros_like(route_lengths)
-
-    # Get end stops based on direction
-    end_stops = jnp.where(
-        current_directions == VehicleDirection.FORWARD,
-        state.routes.stops[route_ids, last_valid_indices],  # last stop for forward
-        state.routes.stops[route_ids, first_valid_indices],  # first stop for backward
-    )
-
-    # Calculate times for different scenarios
-    time_to_end = route_times[route_ids, current_positions, end_stops]
-    time_back = route_times[route_ids, end_stops, passenger_origin]
-    direct_times = route_times[route_ids, current_positions, passenger_origin]
-
-    # Calculate remaining travel time considering direction and route type
-    remaining_travel_time = jnp.where(
-        current_destinations == passenger_origin,
-        state.network.travel_times[current_positions, passenger_origin] - state.fleet.times_on_edge,
-        jnp.where(
-            (state.routes.types[route_ids] == RouteType.FIXED) & going_wrong_direction,
-            time_to_end + time_back,  # Must go to end and come back for fixed routes
-            direct_times,  # Direct path for all other cases
-        ),
-    )
-
-    time_until_available = jnp.where(
-        current_positions == passenger_origin, 0.0, remaining_travel_time
-    )
-
-    in_vehicle_times = route_times[route_ids, passenger_origin, passenger_dest]
-    journey_times = time_until_available + in_vehicle_times
-
-    return journey_times
-
-
 def find_best_transfer_route(
     state: State,
     origin: Int[Array, ""],
     destination: Int[Array, ""],
     route_times: Float[Array, "num_routes num_nodes num_nodes"],
 ) -> tuple[Float[Array, ""], Int[Array, ""], Int[Array, ""], Int[Array, ""]]:
-    """Find best transfer points between routes.
-
-    The function considers all possible transfer points and combinations of routes to find the
-    shortest total journey time. For each vehicle/route combination, it returns:
-    - The best total journey time (including transfer)
-    - The optimal transfer node
-    - The route to transfer to
-
-    Only fixed routes are considered for transfer planning to guarantee a pickup. We consider
-    only the routes, not the actual journey times. Therefore, it could happpen that a vehicle
-    on a flexible route has already passed the desired origin node.
-
-    Args:
-        state: Current state of the environment
-        origin: Starting node of the journey
-        destination: Final destination node
-        route_times: Pre-calculated times between all pairs of nodes for each route
-
-    Returns:
-        Tuple of (best_times, transfer_nodes, next_routes) where:
-        - best_times: Total journey time for each route/vehicle including transfer
-        - transfer_nodes: Node where transfer should occur for each route/vehicle
-        - next_routes: Route ID to transfer to for each route/vehicle
-    """
     # Mask out flex routes by setting their times to infinity
     fixed_route_mask = state.routes.types == RouteType.FIXED
     masked_route_times = jnp.where(fixed_route_mask[:, None, None], route_times, jnp.inf)
@@ -689,47 +612,88 @@ def find_best_transfer_route(
 
 def assign_passengers(
     state: State,
-    discount_factor_future: float = 0.8,
+    discount_factor_future: float = 0.95,
 ) -> State:
     """Optimistic assignment considering both direct and transfer journeys."""
+
     # Get all waiting passengers
-    waiting_mask = state.passengers.statuses == PassengerStatus.WAITING
+    waiting_mask = (state.passengers.statuses == PassengerStatus.WAITING) | (
+        state.passengers.statuses == PassengerStatus.TRANSFERRING
+    )
 
     # Calculate route times once at the start
     route_times, route_directions = calculate_route_times(state)
+    all_waiting_times = calculate_waiting_times(state, route_times, route_directions)
 
     def assign_single_passenger(
         state: State,
         passenger_idx: Int[Array, ""],
         route_times: Float[Array, "num_routes num_nodes num_nodes"],
-        route_directions: Bool[Array, "num_routes num_nodes num_nodes"],
+        route_directions: Int[Array, "num_routes num_nodes num_nodes"],
     ) -> State:
-        origin = state.passengers.origins[passenger_idx]
+        # Update origin in case passenger is transferring
+        is_transferring = state.passengers.statuses[passenger_idx] == PassengerStatus.TRANSFERRING
+        effective_origin = jnp.where(
+            is_transferring,
+            state.passengers.transfer_nodes[passenger_idx],
+            state.passengers.origins[passenger_idx],
+        )
         dest = state.passengers.destinations[passenger_idx]
 
-        # Try direct journey first
-        direct_times = calculate_journey_times(state, origin, dest, route_times, route_directions)
-        has_direct_route = jnp.any(jnp.isfinite(direct_times))
+        # Try direct route first
+        in_vehicle_times = route_times[:, effective_origin, dest]
+        has_direct_route = jnp.any(jnp.isfinite(in_vehicle_times))
 
-        # If no direct route, find best transfer point
-        transfer_time, transfer_node, _, _ = jax.lax.cond(
+        # If no direct route, find best transfer
+        _, transfer_node, _, _ = jax.lax.cond(
             has_direct_route,
             lambda: (jnp.inf, jnp.array(-1), jnp.array(-1), jnp.array(-1)),
-            lambda: find_best_transfer_route(state, origin, dest, route_times),
+            lambda: find_best_transfer_route(state, effective_origin, dest, route_times),
         )
-
-        # Use direct_times if available, otherwise calculate times to transfer node
-        journey_times = jax.lax.cond(
+        in_vehicle_times = jax.lax.cond(
             has_direct_route,
-            lambda: direct_times,
-            lambda: calculate_journey_times(
-                state, origin, transfer_node, route_times, route_directions
-            ),
+            lambda: in_vehicle_times,
+            lambda: route_times[:, effective_origin, transfer_node],
         )
 
-        # Calculate immediate boarding opportunities
-        is_at_correct_stop = state.fleet.is_at_node & (state.fleet.current_edges[:, 0] == origin)
-        immediate_boarding_possible = is_at_correct_stop & state.fleet.seat_is_available
+        # Calculate best direction for each vehicle
+        effective_dest = jnp.where(
+            has_direct_route,
+            dest,
+            transfer_node,
+        )
+        required_directions = get_direction_if_connected(state, effective_origin, effective_dest)
+        best_direction = required_directions[state.fleet.route_ids]  # routes -> vehicles
+
+        # Calculate overall time
+        route_ids = state.fleet.route_ids
+        in_vehicle_times = in_vehicle_times[route_ids]  # num of routes -> num vehicles
+        # wait_forward = all_waiting_times[:, effective_origin, VehicleDirection.FORWARD]
+        # wait_backward = all_waiting_times[:, effective_origin, VehicleDirection.BACKWARDS]
+        wait_times = jnp.select(
+            [
+                best_direction == VehicleDirection.FORWARD,
+                best_direction == VehicleDirection.BACKWARDS,
+            ],
+            [
+                all_waiting_times[:, effective_origin, VehicleDirection.FORWARD],
+                all_waiting_times[:, effective_origin, VehicleDirection.BACKWARDS],
+            ],
+            default=jnp.inf,
+        )
+        all_waiting_times[:, effective_origin, best_direction]
+        journey_times = wait_times + in_vehicle_times
+
+        # Only board vehicles under some conditions
+        moves_in_best_direction = (best_direction != -1) & (
+            state.fleet.directions == best_direction
+        )
+        is_at_correct_stop = state.fleet.is_at_node & (
+            state.fleet.current_edges[:, 0] == effective_origin
+        )
+        immediate_boarding_possible = (
+            is_at_correct_stop & state.fleet.seat_is_available & moves_in_best_direction
+        )
 
         # Check route validity and calculate options
         connects_target = jnp.isfinite(journey_times)
@@ -796,6 +760,195 @@ def assign_passengers(
 
     assert isinstance(final_state, State)
     return final_state
+
+
+def calculate_waiting_times(
+    state: State,
+    route_times: Float[Array, "num_routes num_nodes num_nodes"],
+    route_directions: Int[Array, "num_routes num_nodes num_nodes"],
+) -> Float[Array, "num_vehicles num_nodes 2"]:
+    """Calculate waiting times for each vehicle-node pair in both directions.
+
+    Returns:
+        times[v, n, 0]: waiting time if going forward from node n for vehicle v
+        times[v, n, 1]: waiting time if going backward from node n for vehicle v
+    """
+    # Get vehicle data
+    route_ids = state.fleet.route_ids
+    current_positions = state.fleet.current_edges[:, 0]
+    current_destinations = state.fleet.current_edges[:, 1]
+    current_directions = state.fleet.directions
+    num_nodes = len(state.network.is_terminal)
+
+    # Find last valid stop for each route
+    route_lengths = (state.routes.stops[route_ids] != -1).sum(axis=1)
+    last_valid_indices = route_lengths - 1
+    first_valid_indices = jnp.zeros_like(route_lengths)
+
+    # Get end stops based on direction
+    end_stops = jnp.where(
+        current_directions == VehicleDirection.FORWARD,
+        state.routes.stops[route_ids, last_valid_indices],  # last stop for forward
+        state.routes.stops[route_ids, first_valid_indices],  # first stop for backward
+    )
+    opposite_end_stops = jnp.where(
+        current_directions != VehicleDirection.FORWARD,
+        state.routes.stops[route_ids, last_valid_indices],  # last stop for forward
+        state.routes.stops[route_ids, first_valid_indices],  # first stop for backward
+    )
+
+    # TODO: handle case of no valid stop
+
+    # prepare case seperation
+    is_moving_forward = current_directions == VehicleDirection.FORWARD
+    node_is_on_route = jnp.any(jnp.isfinite(route_times) & (route_times > 0), axis=1)
+    node_is_on_route = node_is_on_route[route_ids, :]  # routes -> vehicles
+    is_ahead_of_node = ~vehicle_is_ahead_of_node(state)
+    is_moving_backwards = ~is_moving_forward
+    is_after_node = ~is_ahead_of_node
+    remaining_edge_time = (
+        state.network.travel_times[current_positions, current_destinations]
+        - state.fleet.times_on_edge
+    )
+
+    # for handling current node of vehicle if vehicle is at node
+    nodes = jnp.arange(num_nodes)  # shape: (num_nodes,)
+    at_current_node = nodes[None, :] == current_positions[:, None]
+    is_at_node = state.fleet.is_at_node[:, None]  # Add dimension for broadcasting
+
+    # We should distinguish three cases based on the number of turns needed to be at node i with
+    # the vehicle moving forward (in route direction). The analogus we are interested in
+    # three cases with the vehicle moving in the opposite direction of the route.
+    #
+    # For example we could have this route with the vehicle midway between edge 3 and 2:
+    # 6 --- 3 --- 2 --- 5
+    #          |
+    #       vehicle ->
+    #
+    # Now we would like to know how long it takes until we would need to wait until the
+    # vehicle arrives at our stop (could be any stop). Every edge has a travel time of 2 minutes
+    # in this example.
+    #
+    # Then we need zero turns of the vehicles to arrive at nodes 2 and 5 in the correct direction
+    # andit would take 1 and 3 minutes to reach the nodes.
+    # For node 6 and 3 we need two turn to reach the nodes in forward direction, totaling a
+    # waiting time of 9 and 11 minutes.
+    # If we would like to travel in the backwards direction we need one turn no matter
+    # which node we are at.
+
+    # case0f: needs zero turn - forward
+    is_case_0f = node_is_on_route & is_moving_forward[:, None] & is_ahead_of_node
+    direct_times = jnp.where(
+        at_current_node & is_at_node,
+        0,
+        route_times[route_ids, current_destinations, :] + remaining_edge_time[:, None],
+    )
+    wait_time_0f = jnp.where(is_case_0f, direct_times, jnp.inf)
+
+    # case0b: needs zero turn - backward
+    is_case_0b = node_is_on_route & is_moving_backwards[:, None] & is_ahead_of_node
+    wait_time_0b = jnp.where(is_case_0b, direct_times, jnp.inf)
+
+    # case1f: needs one turn  - forward
+    is_case_1f = node_is_on_route & is_moving_backwards[:, None]
+    forward = route_times[route_ids, current_destinations, end_stops] + remaining_edge_time
+    backward = route_times[route_ids, end_stops, :]
+    wait_time_1f = jnp.where(is_case_1f, forward[:, None] + backward, jnp.inf)
+
+    # case1b: needs one turn  - backward
+    is_case_1b = node_is_on_route & is_moving_forward[:, None]
+    wait_time_1b = jnp.where(is_case_1b, forward[:, None] + backward, jnp.inf)
+
+    # case2f: needs two turns - forward
+    is_case_2f = node_is_on_route & is_moving_forward[:, None] & is_after_node
+    forward_1 = route_times[route_ids, current_destinations, end_stops] + remaining_edge_time
+    backward = route_times[route_ids, end_stops, opposite_end_stops]
+    forward_2 = route_times[route_ids, opposite_end_stops, :]
+    wait_time_2f = jnp.where(
+        is_case_2f,
+        forward_2 + forward_1[:, None] + backward[:, None],
+        jnp.inf,
+    )
+
+    # case2b: needs two turns - backward
+    is_case_2b = node_is_on_route & is_moving_backwards[:, None] & is_after_node
+    wait_time_2b = jnp.where(
+        is_case_2b,
+        forward_2 + forward_1[:, None] + backward[:, None],
+        jnp.inf,
+    )
+
+    # Save time into results matrix
+    num_nodes = len(state.network.is_terminal)
+    num_vehicles = len(route_ids)
+    times = jnp.full((num_vehicles, num_nodes, 2), jnp.inf)
+
+    times_forward = jnp.select(
+        [is_case_0f, is_case_1f, is_case_2f],
+        [wait_time_0f, wait_time_1f, wait_time_2f],
+        jnp.inf,
+    )
+
+    times_backwards = jnp.select(
+        [is_case_0b, is_case_1b, is_case_2b],
+        [wait_time_0b, wait_time_1b, wait_time_2b],
+        jnp.inf,
+    )
+
+    times = times.at[:, :, VehicleDirection.FORWARD].set(times_forward)
+    times = times.at[:, :, VehicleDirection.BACKWARDS].set(times_backwards)
+
+    return times
+
+
+def vehicle_is_ahead_of_node(state: State) -> Bool[Array, "num_routes num_nodes"]:
+    # Get vehicle data
+    route_ids = state.fleet.route_ids
+    next_node = state.fleet.current_edges[:, 1]
+    is_moving_forward = state.fleet.directions == VehicleDirection.FORWARD
+
+    # Get routes each vehicle is following
+    routes = state.routes.stops[route_ids]  # shape: (num_vehicles, max_route_length)
+
+    # Find indices of next positions in routes
+    next_pos_matches = routes == next_node[:, None]  # shape: (num_vehicles, max_route_length)
+    curr_pos_found = next_pos_matches.any(axis=1)
+    next_pos_indices = jnp.argmax(next_pos_matches, axis=1)
+    next_pos_indices = jnp.where(curr_pos_found, next_pos_indices, -1)  # -1 indicates not found
+
+    # Find indices of all nodes in routes for each vehicle
+    num_nodes = len(state.network.is_terminal)
+    nodes = jnp.arange(num_nodes)  # shape: (num_nodes,)
+    routes_expanded = routes[:, None, :]  # shape: (num_vehicles, 1, max_route_length)
+    nodes_expanded = nodes[None, :, None]  # shape: (1, num_nodes, 1)
+    node_matches = (
+        routes_expanded == nodes_expanded
+    )  # shape: (num_vehicles, num_nodes, max_route_length)
+    node_found = node_matches.any(axis=2)
+    node_indices = jnp.argmax(node_matches, axis=2)
+    node_indices = jnp.where(node_found, node_indices, -1)  # -1 indicates not found
+
+    # Determine if vehicle is ahead of passenger's node
+    valid_mask = (next_pos_indices[:, None] >= 0) & (node_indices >= 0)
+    is_ahead = jnp.where(
+        valid_mask,
+        jnp.where(
+            is_moving_forward[:, None],
+            next_pos_indices[:, None]
+            > node_indices,  # Moving forward: ahead if current index > node index
+            next_pos_indices[:, None]
+            < node_indices,  # Moving backward: ahead if current index < node index
+        ),
+        False,  # If indices are invalid, not ahead
+    )
+
+    # Set False for the node the vehicle is currently at
+    current_node = state.fleet.current_edges[:, 0]
+    is_at_node = state.fleet.is_at_node[:, None]  # Add dimension for broadcasting
+    is_at_current_node = nodes[None, :] == current_node[:, None]
+    is_ahead = jnp.where(is_at_node & is_at_current_node, False, is_ahead)
+
+    return is_ahead
 
 
 def handle_completed_and_transferring_passengers(state: State) -> State:
@@ -892,3 +1045,42 @@ def handle_completed_and_transferring_passengers(state: State) -> State:
     )
 
     return replace(state, fleet=new_fleet, passengers=new_passengers)
+
+
+def get_position_in_route(state: State) -> Int[Array, "num_routes num_nodes"]:
+    """Get the position of each node in the route. -1 if node not in route."""
+    routes = state.routes.stops
+    num_routes = routes.shape[0]
+    num_nodes = len(state.network.is_terminal)
+    max_num_stops = routes.shape[1]
+    position_in_route = jnp.full((num_routes, num_nodes), -1)
+
+    def update_position(
+        i: Int[Array, ""], positions: Int[Array, "num_routes num_nodes"]
+    ) -> Int[Array, "num_routes num_nodes"]:
+        node = routes[:, i]
+        return jnp.where(
+            (node >= 0)[:, None],
+            positions.at[jnp.arange(num_routes), node].set(i),
+            positions,
+        )
+
+    return jax.lax.fori_loop(0, max_num_stops, update_position, position_in_route)
+
+
+def get_direction_if_connected(
+    state: State, origin: Int[Array, ""], dest: Int[Array, ""]
+) -> Int[Array, " NumRoutes"]:
+    """Determine if forward movement is needed to get from origin to destination in route."""
+    positions = get_position_in_route(state)
+    origin_pos = positions[:, origin]
+    dest_pos = positions[:, dest]
+    return jnp.select(
+        [
+            (origin_pos == -1) | (dest_pos == -1),
+            dest_pos > origin_pos,
+            dest_pos < origin_pos,
+            dest_pos == origin_pos,
+        ],
+        [-1, VehicleDirection.FORWARD, VehicleDirection.BACKWARDS, 2],
+    )

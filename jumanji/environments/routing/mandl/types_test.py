@@ -32,10 +32,12 @@ from jumanji.environments.routing.mandl import (
     VehicleDirection,
     add_passenger,
     assign_passengers,
-    calculate_journey_times,
     calculate_route_times,
+    calculate_waiting_times,
     find_best_transfer_route,
+    get_direction_if_connected,
     get_last_stops,
+    get_position_in_route,
     get_travel_time,
     get_valid_stops,
     handle_completed_and_transferring_passengers,
@@ -46,6 +48,7 @@ from jumanji.environments.routing.mandl import (
     remove_passenger,
     update_passengers_to_waiting,
     update_routes,
+    vehicle_is_ahead_of_node,
 )
 
 # jax.config.update("jax_disable_jit", True)
@@ -63,10 +66,233 @@ increment_in_vehicle_times = jit(increment_in_vehicle_times)
 update_passengers_to_waiting = jit(update_passengers_to_waiting)
 calculate_route_times = jit(calculate_route_times)
 move_vehicles = jit(move_vehicles)
-calculate_journey_times = jit(calculate_journey_times)
 assign_passengers = jit(assign_passengers)
 handle_completed_and_transferring_passengers = jit(handle_completed_and_transferring_passengers)
 find_best_transfer_route = jit(find_best_transfer_route)
+vehicle_is_ahead_of_node = jit(vehicle_is_ahead_of_node)
+calculate_waiting_times = jit(calculate_waiting_times)
+get_position_in_route = jit(get_position_in_route)
+get_direction_if_connected = jit(get_direction_if_connected)
+
+
+class TestCalculateWaitingTimes:
+    @pytest.fixture
+    def common_state(self) -> State:
+        """Create a network with nodes 0-6 and route 6-3-2-5."""
+        # Define the network with nodes 0-6
+        node_coordinates = jnp.array(
+            [
+                [0.0, 0.0],  # Node 0
+                [1.0, 0.0],  # Node 1
+                [2.0, 0.0],  # Node 2
+                [3.0, 0.0],  # Node 3
+                [4.0, 0.0],  # Node 4
+                [5.0, 0.0],  # Node 5
+                [6.0, 0.0],  # Node 6
+            ]
+        )
+
+        # Initialize travel times matrix with inf
+        travel_times = jnp.full((7, 7), jnp.inf)
+
+        # Set diagonal to 0
+        travel_times = travel_times.at[jnp.arange(7), jnp.arange(7)].set(0.0)
+
+        # Set travel times for route 6-3-2-5
+        # Only set the connections we need
+        travel_times = travel_times.at[6, 3].set(2.0)  # 6->3
+        travel_times = travel_times.at[3, 6].set(2.0)  # 3->6
+        travel_times = travel_times.at[3, 2].set(2.0)  # 3->2
+        travel_times = travel_times.at[2, 3].set(2.0)  # 2->3
+        travel_times = travel_times.at[2, 5].set(2.0)  # 2->5
+        travel_times = travel_times.at[5, 2].set(2.0)  # 5->2
+
+        is_terminal = jnp.array([False] * 7)
+
+        network = NetworkData(
+            node_coordinates=node_coordinates,
+            travel_times=travel_times,
+            is_terminal=is_terminal,
+        )
+
+        # Define the route 6-3-2-5
+        routes = RouteBatch(
+            types=jnp.array([RouteType.FIXED]),
+            stops=jnp.array([[6, 3, 2, 5, -1, -1]]),
+            frequencies=jnp.array([1.0]),
+            num_fix_routes=jnp.array(1),
+            num_flex_routes=jnp.array(0),
+        )
+
+        fleet = Fleet(
+            route_ids=jnp.array([0]),
+            current_edges=jnp.array([[6, 3]]),  # Starting at node 6 moving to node 3
+            times_on_edge=jnp.array([1.0]),
+            passengers=jnp.array([[-1, -1, -1]]),
+            directions=jnp.array([VehicleDirection.FORWARD]),
+        )
+
+        passengers = Passengers(
+            origins=jnp.array([], dtype=jnp.int32),
+            destinations=jnp.array([], dtype=jnp.int32),
+            desired_departure_times=jnp.array([], dtype=jnp.float32),
+            time_waiting=jnp.array([], dtype=jnp.float32),
+            time_in_vehicle=jnp.array([], dtype=jnp.float32),
+            statuses=jnp.array([], dtype=jnp.int32),
+            has_transferred=jnp.array([], dtype=bool),
+            transfer_nodes=jnp.array([], dtype=jnp.int32),
+        )
+
+        return State(
+            network=network,
+            fleet=fleet,
+            passengers=passengers,
+            routes=routes,
+            current_time=jnp.array(0.0),
+            key=jax.random.PRNGKey(0),
+        )
+
+    def test_case_0f_and_2f(self, common_state: State) -> None:
+        """
+        case0f: needs zero turn - forward
+        case2f: needs two turns - forward
+        """
+        state = common_state
+        fleet = replace(
+            state.fleet,
+            current_edges=jnp.array([[3, 2]]),  # From node 3 to node 2
+            directions=jnp.array([VehicleDirection.FORWARD]),
+            times_on_edge=jnp.array([1.0]),
+        )
+        state = replace(state, fleet=fleet)
+
+        node_is_behind_vehicle = vehicle_is_ahead_of_node(state)
+        node_is_behind_vehicle_expected = jnp.array(
+            [[False, False, False, True, False, False, True]]
+        )
+        chex.assert_trees_all_close(node_is_behind_vehicle, node_is_behind_vehicle_expected)
+
+        route_times, route_directions = calculate_route_times(state)
+        waiting_times = calculate_waiting_times(state, route_times, route_directions)
+        waiting_time_forward = waiting_times[:, :, VehicleDirection.FORWARD]
+        waiting_time_forward_expected = jnp.array([[jnp.inf, jnp.inf, 1, 11, jnp.inf, 3, 9]])
+        chex.assert_trees_all_close(waiting_time_forward, waiting_time_forward_expected)
+
+    def test_case_0b_and_2b(self, common_state: State) -> None:
+        """
+        case0b: needs zero turn - backward
+        case2b: needs tow turns - backward
+        """
+        state = common_state
+        fleet = replace(
+            state.fleet,
+            current_edges=jnp.array([[2, 3]]),  # From node 2 to node 3
+            directions=jnp.array([VehicleDirection.BACKWARDS]),
+            times_on_edge=jnp.array([1.0]),
+        )
+        state = replace(state, fleet=fleet)
+
+        node_is_behind_vehicle = vehicle_is_ahead_of_node(state)
+        node_is_behind_vehicle_expected = jnp.array(
+            [[False, False, True, False, False, True, False]]
+        )
+        chex.assert_trees_all_close(node_is_behind_vehicle, node_is_behind_vehicle_expected)
+
+        route_times, route_directions = calculate_route_times(state)
+        waiting_times = calculate_waiting_times(state, route_times, route_directions)
+        waiting_time_backward = waiting_times[:, :, VehicleDirection.BACKWARDS]
+        waiting_time_backward_expected = jnp.array([[jnp.inf, jnp.inf, 11, 1, jnp.inf, 9, 3]])
+        chex.assert_trees_all_close(waiting_time_backward, waiting_time_backward_expected)
+
+    def test_case_1b(self, common_state: State) -> None:
+        """
+        case1b: needs one turn - backward
+        """
+        state = common_state
+        fleet = replace(
+            state.fleet,
+            current_edges=jnp.array([[3, 6]]),
+            directions=jnp.array([VehicleDirection.BACKWARDS]),
+            times_on_edge=jnp.array([1.0]),
+        )
+        state = replace(state, fleet=fleet)
+
+        route_times, route_directions = calculate_route_times(state)
+        waiting_times = calculate_waiting_times(state, route_times, route_directions)
+        waiting_time_forward = waiting_times[:, :, VehicleDirection.FORWARD]
+        waiting_time_forward_expected = jnp.array([[jnp.inf, jnp.inf, 5, 3, jnp.inf, 7, 1]])
+        chex.assert_trees_all_close(waiting_time_forward, waiting_time_forward_expected)
+
+    def test_case_0f_and_2f_vehicle_at_node(self, common_state: State) -> None:
+        """
+        case0f: needs zero turn - forward
+        case2f: needs two turns - forward
+        """
+        state = common_state
+        fleet = replace(
+            state.fleet,
+            current_edges=jnp.array([[3, 2]]),  # From node 3 to node 2
+            directions=jnp.array([VehicleDirection.FORWARD]),
+            times_on_edge=jnp.array([0.0]),
+        )
+        state = replace(state, fleet=fleet)
+
+        node_is_behind_vehicle = vehicle_is_ahead_of_node(state)
+        node_is_behind_vehicle_expected = jnp.array(
+            [[False, False, False, False, False, False, True]]
+        )
+        chex.assert_trees_all_close(node_is_behind_vehicle, node_is_behind_vehicle_expected)
+
+        route_times, route_directions = calculate_route_times(state)
+        waiting_times = calculate_waiting_times(state, route_times, route_directions)
+        waiting_time_forward = waiting_times[:, :, VehicleDirection.FORWARD]
+        waiting_time_forward_expected = jnp.array([[jnp.inf, jnp.inf, 2, 0, jnp.inf, 4, 10]])
+        chex.assert_trees_all_close(waiting_time_forward, waiting_time_forward_expected)
+
+    def test_case_1f_vehicle_at_node(self, common_state: State) -> None:
+        """
+        case1f: needs one turn - forward
+        """
+        state = common_state
+        fleet = replace(
+            state.fleet,
+            current_edges=jnp.array([[2, 5]]),
+            directions=jnp.array([VehicleDirection.FORWARD]),
+            times_on_edge=jnp.array([0.0]),
+        )
+        state = replace(state, fleet=fleet)
+
+        route_times, route_directions = calculate_route_times(state)
+        waiting_times = calculate_waiting_times(state, route_times, route_directions)
+        waiting_time_backwards = waiting_times[:, :, VehicleDirection.BACKWARDS]
+        waiting_time_backwards_expected = jnp.array([[jnp.inf, jnp.inf, 4, 6, jnp.inf, 2, 8]])
+        chex.assert_trees_all_close(waiting_time_backwards, waiting_time_backwards_expected)
+
+    def test_case_0f_vehicle_at_first_stop(self, common_state: State) -> None:
+        """
+        case0f: needs zero turn - forward
+        case2f: needs two turns - forward
+        """
+        state = common_state
+        fleet = replace(
+            state.fleet,
+            current_edges=jnp.array([[6, 3]]),  # From node 3 to node 2
+            directions=jnp.array([VehicleDirection.FORWARD]),
+            times_on_edge=jnp.array([0.0]),
+        )
+        state = replace(state, fleet=fleet)
+
+        node_is_behind_vehicle = vehicle_is_ahead_of_node(state)
+        node_is_behind_vehicle_expected = jnp.array(
+            [[False, False, False, False, False, False, False]]
+        )
+        chex.assert_trees_all_close(node_is_behind_vehicle, node_is_behind_vehicle_expected)
+
+        route_times, route_directions = calculate_route_times(state)
+        waiting_times = calculate_waiting_times(state, route_times, route_directions)
+        waiting_time_forward = waiting_times[:, :, VehicleDirection.FORWARD]
+        waiting_time_forward_expected = jnp.array([[jnp.inf, jnp.inf, 4, 2, jnp.inf, 6, 0]])
+        chex.assert_trees_all_close(waiting_time_forward, waiting_time_forward_expected)
 
 
 class TestHandleCompletedPassengers:
@@ -1029,9 +1255,7 @@ class TestPassengers:
             destinations=jnp.array([5, 6, 7, 8, 9], dtype=int),
             desired_departure_times=jnp.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=float),
             time_waiting=jnp.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=float),
-            time_in_vehicle=jnp.array(
-                [-1.0, -1.0, -1.0, -1.0, -1.0], dtype=float
-            ),  # -1 indicates not in vehicle
+            time_in_vehicle=jnp.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=float),
             statuses=jnp.array(
                 [
                     PassengerStatus.WAITING,
@@ -1053,7 +1277,7 @@ class TestPassengers:
             destinations=jnp.array([5, 6, 7, 8, 9, 10], dtype=int),
             desired_departure_times=jnp.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0], dtype=float),
             time_waiting=jnp.array([10.0, 5.0, 0.0, 15.0, 3.0, 0.0], dtype=float),
-            time_in_vehicle=jnp.array([-1.0, -1.0, 20.0, -1.0, 10.0, -1.0], dtype=float),
+            time_in_vehicle=jnp.array([0.0, 0.0, 20.0, 0.0, 10.0, 0.0], dtype=float),
             statuses=jnp.array(
                 [
                     PassengerStatus.WAITING,
@@ -1099,7 +1323,7 @@ class TestPassengers:
 
     def test_initialization_all_waiting(self, all_waiting_passengers: Passengers) -> None:
         assert jnp.all(all_waiting_passengers.statuses == PassengerStatus.WAITING)
-        assert jnp.all(all_waiting_passengers.time_in_vehicle == -1.0)
+        assert jnp.all(all_waiting_passengers.time_in_vehicle == 0.0)
 
     def test_initialization_mixed_statuses(self, mixed_passenger_state: Passengers) -> None:
         expected_statuses = jnp.array(
@@ -1180,7 +1404,7 @@ class TestPassengers:
             destinations=jnp.array([5, 6, 7, 8, 9], dtype=int),
             desired_departure_times=jnp.array([3.0, 10.0, 1.0, 2.0, 2.0], dtype=float),
             time_waiting=jnp.array([0.0, 0.0, 1.0, 5.0, 10.0], dtype=float),
-            time_in_vehicle=jnp.array([-1.0, -1.0, 15.0, -1.0, 20.0], dtype=float),
+            time_in_vehicle=jnp.array([0.0, 0.0, 15.0, 0.0, 20.0], dtype=float),
             statuses=jnp.array(
                 [
                     PassengerStatus.NOT_IN_SYSTEM,  # index=0
@@ -1524,302 +1748,6 @@ class TestFleetMovement:
         chex.assert_trees_all_equal(updated_state.fleet.directions, jnp.array([1]))
 
 
-class TestCalculateTotalTravelTimes:
-    @pytest.fixture
-    def linear_network_state(self) -> State:
-        """Create a simple linear network (0--1--2) with fixed travel times."""
-        network = NetworkData(
-            node_coordinates=jnp.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]),
-            travel_times=jnp.array(
-                [
-                    [0.0, 1.0, jnp.inf],
-                    [1.0, 0.0, 1.0],
-                    [jnp.inf, 1.0, 0.0],
-                ]
-            ),
-            is_terminal=jnp.array([True, False, True]),
-        )
-
-        # Route: 0->1->2 (fixed route)
-        routes = RouteBatch(
-            types=jnp.array([RouteType.FIXED]),
-            stops=jnp.array([[0, 1, 2, -1]]),
-            frequencies=jnp.ones(1),
-            num_flex_routes=jnp.array(0),
-            num_fix_routes=jnp.array(1),
-        )
-
-        fleet = Fleet(
-            route_ids=jnp.array([0]),
-            current_edges=jnp.array([[0, 1]]),  # Vehicle starts on edge 0->1
-            times_on_edge=jnp.array([0.0]),
-            passengers=jnp.array([[-1, -1]]),  # Empty vehicle with capacity 2
-            directions=jnp.array([0]),  # Forward direction
-        )
-
-        passengers = Passengers(
-            origins=jnp.array([], dtype=jnp.int32),
-            destinations=jnp.array([], dtype=jnp.int32),
-            desired_departure_times=jnp.array([], dtype=jnp.float32),
-            time_waiting=jnp.array([], dtype=jnp.float32),
-            time_in_vehicle=jnp.array([], dtype=jnp.float32),
-            statuses=jnp.array([], dtype=jnp.int32),
-            has_transferred=jnp.array([], dtype=bool),
-            transfer_nodes=jnp.array([], dtype=jnp.int32),
-        )
-
-        return State(
-            network=network,
-            fleet=fleet,
-            passengers=passengers,
-            routes=routes,
-            current_time=jnp.array(0.0),
-            key=jax.random.PRNGKey(0),
-        )
-
-    @pytest.fixture
-    def circular_network_state(self) -> State:
-        """Create a circular network (0->1->2->0) with repeated stops."""
-        network = NetworkData(
-            node_coordinates=jnp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-            travel_times=jnp.array(
-                [
-                    [0.0, 1.0, 2.0],
-                    [1.0, 0.0, 1.0],
-                    [2.0, 1.0, 0.0],
-                ]
-            ),
-            is_terminal=jnp.array([True, False, True]),
-        )
-
-        # Route: 0->1->2->0->1 (fixed route with repeated stops)
-        routes = RouteBatch(
-            types=jnp.array([RouteType.FIXED]),
-            stops=jnp.array([[0, 1, 2, 0, 1, -1]]),
-            frequencies=jnp.ones(1),
-            num_flex_routes=jnp.array(0),
-            num_fix_routes=jnp.array(1),
-        )
-
-        fleet = Fleet(
-            route_ids=jnp.array([0]),
-            current_edges=jnp.array([[0, 1]]),
-            times_on_edge=jnp.array([0.0]),
-            passengers=jnp.array([[-1, -1]]),
-            directions=jnp.array([0]),
-        )
-
-        passengers = Passengers(
-            origins=jnp.array([], dtype=jnp.int32),
-            destinations=jnp.array([], dtype=jnp.int32),
-            desired_departure_times=jnp.array([], dtype=jnp.float32),
-            time_waiting=jnp.array([], dtype=jnp.float32),
-            time_in_vehicle=jnp.array([], dtype=jnp.float32),
-            statuses=jnp.array([], dtype=jnp.int32),
-            has_transferred=jnp.array([], dtype=bool),
-            transfer_nodes=jnp.array([], dtype=jnp.int32),
-        )
-
-        return State(
-            network=network,
-            fleet=fleet,
-            passengers=passengers,
-            routes=routes,
-            current_time=jnp.array(0.0),
-            key=jax.random.PRNGKey(0),
-        )
-
-    def test_forward_journey(self, linear_network_state: State) -> None:
-        """Test journey time calculation in forward direction."""
-        route_times, route_directions = calculate_route_times(linear_network_state)
-
-        journey_times = calculate_journey_times(
-            linear_network_state,
-            passenger_origin=jnp.array(1),
-            passenger_dest=jnp.array(2),
-            route_times=route_times,
-            route_directions=route_directions,
-        )
-        # Vehicle at edge 0->1, needs 1 time unit to reach node 1,
-        # then 1 time unit to reach node 2
-        expected_times = jnp.array([2.0])
-        chex.assert_trees_all_equal(journey_times, expected_times)
-
-    def test_backward_journey(self, linear_network_state: State) -> None:
-        """Test journey time calculation when vehicle needs to go backward."""
-        # Put vehicle at node 2 going backward
-        state = replace(
-            linear_network_state,
-            fleet=replace(
-                linear_network_state.fleet,
-                current_edges=jnp.array([[2, 1]]),
-                directions=jnp.array([1]),  # Backward direction
-            ),
-        )
-
-        route_times, route_directions = calculate_route_times(state)
-        journey_times = calculate_journey_times(
-            state,
-            passenger_origin=jnp.array(0),
-            passenger_dest=jnp.array(1),
-            route_times=route_times,
-            route_directions=route_directions,
-        )
-        # Vehicle needs to go 2->1->0->1
-        expected_times = jnp.array([3.0])  # 1 unit to 1, 1 to 0, 1 back to 1
-        chex.assert_trees_all_equal(journey_times, expected_times)
-
-    @pytest.mark.skip
-    def test_repeated_stops(self, circular_network_state: State) -> None:
-        """Test journey times with repeated stops in route."""
-        # Test from first occurrence of stop 1
-        route_times, route_directions = calculate_route_times(circular_network_state)
-        journey_times = calculate_journey_times(
-            circular_network_state,
-            passenger_origin=jnp.array(1),
-            passenger_dest=jnp.array(2),
-            route_times=route_times,
-            route_directions=route_directions,
-        )
-        # Vehicle at 0->1, needs 1 time unit to 1, then 1 to 2
-        expected_times = jnp.array([2.0])
-        chex.assert_trees_all_equal(journey_times, expected_times)
-
-        # Test from second occurrence of stop 1
-        state = replace(
-            circular_network_state,
-            fleet=replace(
-                circular_network_state.fleet,
-                current_edges=jnp.array([[2, 0]]),
-                directions=jnp.array([0]),
-            ),
-        )
-
-        route_times, route_directions = calculate_route_times(state)
-        journey_times = calculate_journey_times(
-            state,
-            passenger_origin=jnp.array(1),
-            passenger_dest=jnp.array(0),
-            route_times=route_times,
-            route_directions=route_directions,
-        )
-        # Vehicle needs to go 2->0->1->0
-        expected_times = jnp.array([4.0])
-        chex.assert_trees_all_equal(journey_times, expected_times)
-
-    def test_flexible_route(self, linear_network_state: State) -> None:
-        """Test journey times for flexible routes."""
-        # Convert route to flexible
-        state = replace(
-            linear_network_state,
-            routes=replace(
-                linear_network_state.routes,
-                types=jnp.array([RouteType.FLEXIBLE]),
-                num_flex_routes=jnp.array(1),
-                num_fix_routes=jnp.array(0),
-            ),
-        )
-
-        # Test forward journey
-        route_times, route_directions = calculate_route_times(state)
-        journey_times = calculate_journey_times(
-            state,
-            passenger_origin=jnp.array(1),
-            passenger_dest=jnp.array(2),
-            route_times=route_times,
-            route_directions=route_directions,
-        )
-        expected_times = jnp.array([2.0])  # Same as fixed route
-        chex.assert_trees_all_equal(journey_times, expected_times)
-
-        # Test "backward" journey (flexible routes don't turn around)
-        state = replace(
-            state,
-            fleet=replace(
-                state.fleet,
-                current_edges=jnp.array([[2, 1]]),
-                directions=jnp.array([1]),
-            ),
-        )
-        route_times, route_directions = calculate_route_times(state)
-        journey_times = calculate_journey_times(
-            state,
-            passenger_origin=jnp.array(0),
-            passenger_dest=jnp.array(1),
-            route_times=route_times,
-            route_directions=route_directions,
-        )
-        # Should return inf as flexible routes don't turn around
-        expected_times = jnp.array([jnp.inf])
-        chex.assert_trees_all_equal(journey_times, expected_times)
-
-    def test_multiple_vehicles(self) -> None:
-        """Test journey times calculation with multiple vehicles."""
-        network = NetworkData(
-            node_coordinates=jnp.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]),
-            travel_times=jnp.array(
-                [
-                    [0.0, 1.0, jnp.inf],
-                    [1.0, 0.0, 1.0],
-                    [jnp.inf, 1.0, 0.0],
-                ]
-            ),
-            is_terminal=jnp.array([True, False, True]),
-        )
-
-        routes = RouteBatch(
-            types=jnp.array([RouteType.FIXED, RouteType.FLEXIBLE]),
-            stops=jnp.array(
-                [
-                    [0, 1, 2, -1],  # Fixed route
-                    [1, 2, -1, -1],  # Flexible route
-                ]
-            ),
-            frequencies=jnp.ones(2),
-            num_flex_routes=jnp.array(1),
-            num_fix_routes=jnp.array(1),
-        )
-
-        fleet = Fleet(
-            route_ids=jnp.array([0, 1]),
-            current_edges=jnp.array([[0, 1], [1, 2]]),
-            times_on_edge=jnp.array([0.0, 0.0]),
-            passengers=jnp.array([[-1, -1], [-1, -1]]),
-            directions=jnp.array([0, 0]),
-        )
-
-        state = State(
-            network=network,
-            fleet=fleet,
-            passengers=Passengers(
-                origins=jnp.array([], dtype=jnp.int32),
-                destinations=jnp.array([], dtype=jnp.int32),
-                desired_departure_times=jnp.array([], dtype=jnp.float32),
-                time_waiting=jnp.array([], dtype=jnp.float32),
-                time_in_vehicle=jnp.array([], dtype=jnp.float32),
-                statuses=jnp.array([], dtype=jnp.int32),
-                has_transferred=jnp.array([], dtype=bool),
-                transfer_nodes=jnp.array([], dtype=jnp.int32),
-            ),
-            routes=routes,
-            current_time=jnp.array(0.0),
-            key=jax.random.PRNGKey(0),
-        )
-
-        route_times, route_directions = calculate_route_times(state)
-        journey_times = calculate_journey_times(
-            state,
-            passenger_origin=jnp.array(1),
-            passenger_dest=jnp.array(2),
-            route_times=route_times,
-            route_directions=route_directions,
-        )
-        # First vehicle: 1 time unit to node 1, then 1 to node 2
-        # Second vehicle: Already at node 1, 1 time unit to node 2
-        expected_times = jnp.array([2.0, 1.0])
-        chex.assert_trees_all_equal(journey_times, expected_times)
-
-
 class TestAssignPassengers:
     @pytest.fixture
     def basic_state(self) -> State:
@@ -1838,7 +1766,7 @@ class TestAssignPassengers:
         )
 
         routes = RouteBatch(
-            types=jnp.array([RouteType.FIXED, RouteType.FLEXIBLE], dtype=int),
+            types=jnp.array([RouteType.FIXED, RouteType.FIXED], dtype=int),
             stops=jnp.array(
                 [
                     [0, 1, 2, -1, -1, -1],  # Fixed route: 0->1->2
@@ -1847,8 +1775,8 @@ class TestAssignPassengers:
                 dtype=int,
             ),
             frequencies=jnp.ones(2, dtype=jnp.float32),
-            num_flex_routes=jnp.array(1),
-            num_fix_routes=jnp.array(1),
+            num_flex_routes=jnp.array(0),
+            num_fix_routes=jnp.array(2),
         )
 
         fleet = Fleet(
@@ -1866,7 +1794,7 @@ class TestAssignPassengers:
             destinations=jnp.array([2, 2, 2], dtype=int),
             desired_departure_times=jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32),
             time_waiting=jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32),
-            time_in_vehicle=jnp.array([-1.0, -1.0, -1.0], dtype=jnp.float32),
+            time_in_vehicle=jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32),
             statuses=jnp.array(
                 [
                     PassengerStatus.WAITING,
@@ -1975,7 +1903,7 @@ class TestAssignPassengers:
                 destinations=jnp.array([2], dtype=jnp.int32),
                 desired_departure_times=jnp.array([0.0], dtype=jnp.float32),
                 time_waiting=jnp.array([0.0], dtype=jnp.float32),
-                time_in_vehicle=jnp.array([-1.0], dtype=jnp.float32),
+                time_in_vehicle=jnp.array([0.0], dtype=jnp.float32),
                 statuses=jnp.array([PassengerStatus.WAITING], dtype=jnp.int32),
                 has_transferred=jnp.array([False], dtype=bool),
                 transfer_nodes=jnp.array([-1], dtype=jnp.int32),
@@ -2016,7 +1944,7 @@ class TestAssignPassengers:
                 destinations=jnp.array([2, 2, 1, 1, 2], dtype=jnp.int32),
                 desired_departure_times=jnp.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float32),
                 time_waiting=jnp.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float32),
-                time_in_vehicle=jnp.array([-1.0, -1.0, 20.0, 20.0, 10.0], dtype=jnp.float32),
+                time_in_vehicle=jnp.array([0.0, 0.0, 20.0, 20.0, 10.0], dtype=jnp.float32),
                 statuses=jnp.array(
                     [
                         PassengerStatus.WAITING,  # passenger 0: waiting at node 1
