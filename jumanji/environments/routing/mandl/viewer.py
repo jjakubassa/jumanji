@@ -36,11 +36,11 @@ from jumanji.viewer import Viewer
 
 
 class MandlViewer(Viewer):
-    FIGURE_SIZE = (10.0, 10.0)
-    NODE_SIZE = 1000
-    ICON_SIZE = 0.04
-    OFFSET = 0.005
-    INITIAL_OFFSET = 0.005
+    FIGURE_SIZE = (5.78, 5.78)
+    NODE_SIZE = 500
+    ICON_SIZE = 0.02
+    OFFSET = 0.0025
+    INITIAL_OFFSET = 0.0025
     ICON_PATH = "bus-transportation-public-svgrepo-com.png"
 
     def __init__(self, name: str, render_mode: str = "human") -> None:
@@ -145,6 +145,12 @@ class MandlViewer(Viewer):
         ax.get_yaxis().set_visible(False)
         ax.set_xlim(-0.1, 1.1)
         ax.set_ylim(-0.1, 1.1)
+
+        # Remove outer border
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["bottom"].set_visible(False)
+        ax.spines["left"].set_visible(False)
 
     def precompute_positions_and_angles(
         self, node_coordinates: jnp.ndarray, travel_times: jnp.ndarray

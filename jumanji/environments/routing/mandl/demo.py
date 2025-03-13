@@ -15,12 +15,14 @@
 # %% imports
 import jax
 import matplotlib.pyplot as plt
+
+# jax.config.update("jax_disable_jit", True)
 import tqdm
 
 from jumanji.environments.routing.mandl import Mandl
 from jumanji.environments.routing.mandl.types import PassengerStatus, State
 
-# jax.config.update("jax_disable_jit", True)
+plt.style.use(["science", "ieee"])
 
 
 # %%
@@ -29,10 +31,13 @@ def main() -> State:
     plt.ion()
 
     # Create environment
-    n_steps = 24 * 60 + 200
+    n_steps = 100
+    buffer_steps = 100
+    total_steps = n_steps + buffer_steps
     env = Mandl(
         network_name="mandl1",
-        runtime=24 * 60,
+        runtime=n_steps,
+        buffer_time=buffer_steps,
         vehicle_capacity=50,
         num_flex_routes=0,
         max_route_length=0,
@@ -75,15 +80,15 @@ def main() -> State:
         print(f"Node {i+1}: ({coords[0]:.3f}, {coords[1]:.3f})")
 
     # Render initial state
-    print("\nRendering initial state...")
-    # env.render(state, save_path="initial_state.png")
+    # print("\nRendering initial state...")
+    # env.render(state, save_path="initial_state.pdf")
 
     # Simulate a few steps
     print("\nSimulating steps...")
     # states = [state]
     step = jax.jit(env.step)
 
-    for i in tqdm.tqdm(range(n_steps)):
+    for i in tqdm.tqdm(range(total_steps)):
         # For now, just use dummy action (no-op for all flexible routes)
         action = jax.numpy.full(
             state.routes.num_routes,
@@ -105,6 +110,10 @@ def main() -> State:
             + f"{(state.passengers.statuses == PassengerStatus.WAITING).sum()}"
         )
         print(
+            "Transferring passengers:"
+            + f"{(state.passengers.statuses == PassengerStatus.TRANSFERRING).sum()}"
+        )
+        print(
             "In-vehicle passengers:"
             + f"{(state.passengers.statuses == PassengerStatus.IN_VEHICLE).sum()}"
         )
@@ -112,6 +121,7 @@ def main() -> State:
             "Completed passengers:"
             + f"{(state.passengers.statuses == PassengerStatus.COMPLETED).sum()}"
         )
+        print("Passengers that have transferred:" + f"{(state.passengers.has_transferred).sum()}")
 
         print(f"Sum of waiting times: {state.passengers.time_waiting.sum():.2f}")
         print(f"Sum of in-vehicle times: {state.passengers.time_in_vehicle.sum():.2f}")
@@ -160,25 +170,26 @@ print(
 
 # %%
 # Create figure for histograms
-plt.figure(figsize=(12, 5))
+plt.figure(figsize=(5.78, 2.5))
 
 # Plot waiting time distribution
 plt.subplot(1, 2, 1)
 plt.hist(state.passengers.time_waiting, bins=30, alpha=0.75)
-plt.title("Distribution of Waiting Times")
-plt.xlabel("Waiting Time")
-plt.ylabel("Frequency")
+# plt.title("Distribution of Waiting Times")
+plt.ylabel("Number of Passengers")
+plt.xlabel("Waiting Time [min]")
 
 # Plot in-vehicle time distribution
 plt.subplot(1, 2, 2)
 plt.hist(state.passengers.time_in_vehicle, bins=30, alpha=0.75)
-plt.title("Distribution of In-Vehicle Times")
-plt.xlabel("In-Vehicle Time")
-plt.ylabel("Frequency")
+# plt.title("Distribution of In-Vehicle Times [s]")
+plt.xlabel("In-Vehicle Time [min]")
 
 # Show and save the histogram figure
 plt.tight_layout()
 plt.savefig("passenger_time_distributions.png", dpi=300, bbox_inches="tight")
+# plt.savefig("passenger_time_distributions.pgf", bbox_inches="tight")
+plt.savefig("passenger_time_distributions.pdf", bbox_inches="tight", backend="pgf")
 print("Saved passenger time distributions to passenger_time_distributions.png")
 plt.show()
 
