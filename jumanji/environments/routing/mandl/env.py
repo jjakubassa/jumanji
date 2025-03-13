@@ -26,7 +26,6 @@ from jaxtyping import Array, Bool, Int
 from jumanji import specs
 from jumanji.env import Environment
 from jumanji.environments.routing.mandl.types import (
-    NetworkData,
     Observation,
     PassengerStatus,
     RouteBatch,
@@ -64,6 +63,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         vehicle_capacity: int = 50,
         num_flex_routes: int = 0,
         max_route_length: int = 8,
+        buffer_time: float = 100.0,
         passenger_init_mode: Literal[
             "evenly_spaced", "rush_hour", "uniform_random", "all_at_start"
         ] = "evenly_spaced",
@@ -72,7 +72,8 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         self.runtime: Final = runtime
         self.num_flex_routes: Final = num_flex_routes
         self.passenger_init_mode: Final = passenger_init_mode
-        self.vehicle_capacity = vehicle_capacity
+        self.vehicle_capacity: Final = vehicle_capacity
+        self.buffer_time: Final = buffer_time
         self._viewer = viewer or MandlViewer(
             name="Mandl",
             render_mode="human",
@@ -311,71 +312,100 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         """Returns the observation spec."""
         num_nodes = self._network_data.num_nodes
         max_passengers = len(self._demand_data)
+        num_routes = self._route_batch.num_routes
+        max_route_length = self.max_route_length
+        num_vehicles = self._initial_fleet.num_vehicles
 
         return specs.Spec(
             Observation,
             "ObservationSpec",
-            network=specs.Spec(
-                NetworkData,
-                "NetworkSpec",
-                node_coordinates=specs.BoundedArray(
-                    shape=(num_nodes, 2),
-                    dtype=float,
-                    minimum=0.0,
-                    maximum=1.0,
-                ),
-                travel_times=specs.BoundedArray(
-                    shape=(num_nodes, num_nodes),
-                    dtype=float,
-                    minimum=0.0,
-                    maximum=float("inf"),
-                ),
-                is_terminal=specs.BoundedArray(
-                    shape=(num_nodes,),
-                    dtype=bool,
-                    minimum=False,
-                    maximum=True,
-                ),
+            # Network data specs
+            num_nodes=specs.BoundedArray(
+                shape=(),
+                dtype=int,
+                minimum=0,
+                maximum=num_nodes,
             ),
-            routes=specs.Spec(
-                RouteBatch,
-                "RouteBatchSpec",
-                types=specs.BoundedArray(
-                    shape=(self._route_batch.num_routes,),
-                    dtype=int,
-                    minimum=0,
-                    maximum=1,  # RouteType.FIXED or RouteType.FLEXIBLE
-                ),
-                stops=specs.BoundedArray(
-                    shape=(self._route_batch.num_routes, self.max_route_length),
-                    dtype=int,
-                    minimum=-1,  # -1 for padding
-                    maximum=num_nodes - 1,
-                ),
-                frequencies=specs.BoundedArray(
-                    shape=(self._route_batch.num_routes,),
-                    dtype=float,
-                    minimum=0.0,
-                    maximum=float("inf"),
-                ),
-                num_flex_routes=specs.BoundedArray(
-                    shape=(),
-                    dtype=int,
-                    minimum=0,
-                    maximum=self._route_batch.num_routes,
-                ),
-                num_fix_routes=specs.BoundedArray(
-                    shape=(),
-                    dtype=int,
-                    minimum=0,
-                    maximum=self._route_batch.num_routes,
-                ),
+            node_coordinates=specs.BoundedArray(
+                shape=(num_nodes * 2,),
+                dtype=float,
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            travel_times=specs.BoundedArray(
+                shape=(num_nodes * num_nodes,),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
+            ),
+            is_terminal=specs.BoundedArray(
+                shape=(num_nodes,),
+                dtype=bool,
+                minimum=False,
+                maximum=True,
+            ),
+            # Route data specs
+            num_routes=specs.BoundedArray(
+                shape=(),
+                dtype=int,
+                minimum=0,
+                maximum=num_routes,
+            ),
+            max_route_length=specs.BoundedArray(
+                shape=(),
+                dtype=int,
+                minimum=0,
+                maximum=max_route_length,
+            ),
+            route_types=specs.BoundedArray(
+                shape=(num_routes,),
+                dtype=int,
+                minimum=0,
+                maximum=1,  # RouteType.FIXED or RouteType.FLEXIBLE
+            ),
+            route_stops=specs.BoundedArray(
+                shape=(num_routes, max_route_length),
+                dtype=int,
+                minimum=-1,  # -1 for padding
+                maximum=num_nodes - 1,
+            ),
+            route_frequencies=specs.BoundedArray(
+                shape=(num_routes,),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
+            ),
+            num_flex_routes=specs.BoundedArray(
+                shape=(),
+                dtype=int,
+                minimum=0,
+                maximum=num_routes,
+            ),
+            num_fix_routes=specs.BoundedArray(
+                shape=(),
+                dtype=int,
+                minimum=0,
+                maximum=num_routes,
+            ),
+            # Fleet data spec
+            num_vehicles=specs.BoundedArray(
+                shape=(),
+                dtype=int,
+                minimum=0,
+                maximum=num_vehicles,
             ),
             fleet_positions=specs.BoundedArray(
                 shape=(self._initial_fleet.num_vehicles, 2),
                 dtype=int,
                 minimum=0,
                 maximum=num_nodes - 1,
+            ),
+            # Passenger data specs
+            num_passengers=specs.BoundedArray(
+                shape=(),
+                dtype=int,
+                minimum=0,
+                maximum=max_passengers,
             ),
             origins=specs.BoundedArray(
                 shape=(max_passengers,),
@@ -399,8 +429,9 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 shape=(max_passengers,),
                 dtype=int,
                 minimum=0,
-                maximum=3,  # Number of PassengerStatus values
+                maximum=4,  # Number of PassengerStatus values
             ),
+            # Environment state specs
             current_time=specs.BoundedArray(
                 shape=(),
                 dtype=float,
@@ -408,7 +439,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 maximum=self.runtime,
             ),
             action_mask=specs.BoundedArray(
-                shape=(self._route_batch.num_routes, num_nodes + 1),
+                shape=(num_routes, num_nodes + 1),
                 dtype=bool,
                 minimum=False,
                 maximum=True,
@@ -416,7 +447,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         )
 
     @cached_property
-    def action_spec(self) -> specs.BoundedArray:
+    def action_spec(self) -> specs.MultiDiscreteArray:
         """Returns the action spec for flexible routes.
 
         The action space consists of one action per flexible route.
@@ -424,11 +455,14 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         - Which node to add as the next stop (0 to num_nodes-1)
         - Or perform no-op (num_nodes)
         """
-        return specs.BoundedArray(
-            shape=(self._route_batch.num_routes,),  # One action per flexible route
+        return specs.MultiDiscreteArray(
+            num_values=jnp.full(
+                shape=(self._route_batch.num_routes,),  # One action per route
+                fill_value=self._network_data.num_nodes
+                + 1,  # num_nodes + 1 possible actions per route
+                dtype=jnp.int32,
+            ),
             dtype=jnp.int32,
-            minimum=0,  # First node index
-            maximum=self._network_data.num_nodes,  # num_nodes is no-op action
             name="actions",
         )
 
@@ -450,15 +484,33 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
 
     def get_observation(self, state: State) -> Observation:
         """Creates observation from current state."""
+        num_nodes = jnp.array(len(state.network.is_terminal))
+        num_vehicles = state.fleet.num_vehicles
 
         return Observation(
-            network=state.network,
-            routes=state.routes,
+            # Network data
+            num_nodes=num_nodes,
+            node_coordinates=state.network.node_coordinates,
+            travel_times=state.network.travel_times,
+            is_terminal=state.network.is_terminal,
+            # Routes data
+            num_routes=state.routes.num_routes,
+            max_route_length=jnp.array(self.max_route_length),
+            route_types=state.routes.types,
+            route_stops=state.routes.stops,
+            route_frequencies=state.routes.frequencies,
+            num_flex_routes=state.routes.num_flex_routes,
+            num_fix_routes=state.routes.num_fix_routes,
+            # Fleet data
+            num_vehicles=num_vehicles,
             fleet_positions=state.fleet.current_edges,
+            # Passenger data
+            num_passengers=jnp.array(state.passengers.num_passengers),
             origins=state.passengers.origins,
             destinations=state.passengers.destinations,
             desired_departure_times=state.passengers.desired_departure_times,
             passenger_statuses=state.passengers.statuses,
+            # Environment state
             current_time=state.current_time,
             action_mask=self.get_action_mask(state),
         )

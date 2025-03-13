@@ -120,11 +120,18 @@ def create_initial_passengers(
     demand_data: pd.DataFrame,
     key: chex.PRNGKey,
     runtime: float = 60.0,
-    deterministic: bool = True,
+    buffer_time: float = 20.0,  # New parameter for end buffer
     mode: Literal["evenly_spaced", "rush_hour", "uniform_random", "all_at_start"] = "evenly_spaced",
 ) -> Passengers:
     """
-    Create initial passengers based on demand data with deterministic or random departure times.
+    Create initial passengers with staggered system entry times.
+
+    Args:
+        demand_data: DataFrame containing passenger demand information
+        key: Random key for stochastic operations
+        runtime: Total runtime of the episode
+        buffer_time: Minimum time between last passenger entry and episode end
+        mode: Method for distributing passenger entry times
     """
     origins = []
     destinations = []
@@ -149,56 +156,52 @@ def create_initial_passengers(
     origins = origins[shuffle_indices]
     destinations = destinations[shuffle_indices]
 
+    # Calculate the available time window for passenger entries
+    available_time = runtime - buffer_time
+
     if mode == "evenly_spaced":
-        # Evenly space departure times
-        desired_departure_times = jnp.linspace(0.0, runtime * 0.8, num_passengers, dtype=jnp.int32)
+        # Spread entries evenly across available time
+        entry_times = jnp.linspace(0.0, available_time, num_passengers)
+
     elif mode == "rush_hour":
-        # Create a bimodal distribution with two Gaussian components
-        # Key parameters for morning and evening rush hours
+        # Adjust rush hour timing to respect buffer
+        morning_center = available_time * 0.3  # Slightly earlier to ensure buffer
+        morning_std = available_time * 0.1
+        evening_center = available_time * 0.7  # Slightly earlier to ensure buffer
+        evening_std = available_time * 0.1
+        morning_weight = 0.6
 
-        # Morning rush: centered at 25% of runtime
-        morning_center = runtime * 0.25
-        morning_std = runtime * 0.07  # Spread of morning rush
+        # Generate times for morning and evening rush
+        key1, key2, key3 = jax.random.split(key, 3)
+        is_morning = jax.random.uniform(key1, (num_passengers,)) < morning_weight
 
-        # Evening rush: centered at 70% of runtime
-        evening_center = runtime * 0.70
-        evening_std = runtime * 0.09  # Evening rush typically has a wider spread
+        morning_times = jax.random.normal(key2, (num_passengers,)) * morning_std + morning_center
+        evening_times = jax.random.normal(key3, (num_passengers,)) * evening_std + evening_center
 
-        # Relative weights - morning rush is typically heavier
-        morning_weight = 0.6  # 60% of passengers in morning rush
+        # Combine and clip to ensure buffer
+        entry_times = jnp.where(is_morning, morning_times, evening_times)
+        entry_times = jnp.clip(entry_times, 0.0, available_time)
 
-        # Determine which rush hour each passenger belongs to
-        is_morning_commuter = (
-            jax.random.uniform(jax.random.split(key)[0], (num_passengers,)) < morning_weight
-        )
-
-        # Generate normal distributions for each rush hour
-        morning_noise = jax.random.normal(jax.random.split(key)[1], (num_passengers,)) * morning_std
-        evening_noise = jax.random.normal(jax.random.split(key)[2], (num_passengers,)) * evening_std
-
-        # Combine into final distribution
-        morning_times = morning_center + morning_noise
-        evening_times = evening_center + evening_noise
-        desired_departure_times = jnp.where(is_morning_commuter, morning_times, evening_times)
-
-        # Ensure times are within valid range
-        desired_departure_times = jnp.clip(desired_departure_times, 0.0, runtime)
     elif mode == "uniform_random":
-        # uniform random departure times
-        desired_departure_times = jax.random.uniform(
-            key, shape=(num_passengers,), minval=0.0, maxval=runtime
+        # Random times within available window
+        entry_times = jax.random.uniform(
+            key, shape=(num_passengers,), minval=0.0, maxval=available_time
         )
-    elif mode == "all_at_start":
-        desired_departure_times = jnp.zeros(num_passengers, dtype=jnp.float32)
-    else:
-        raise NotImplementedError
 
-    # Sort passengers by departure time
-    sort_indices = jnp.argsort(desired_departure_times)
+    elif mode == "all_at_start":
+        # All passengers enter at start
+        entry_times = jnp.zeros(num_passengers)
+
+    else:
+        raise ValueError(f"Unknown passenger initialization mode: {mode}")
+
+    # Sort passengers by entry time
+    sort_indices = jnp.argsort(entry_times)
     origins = origins[sort_indices]
     destinations = destinations[sort_indices]
-    desired_departure_times = desired_departure_times[sort_indices]
+    entry_times = entry_times[sort_indices]
 
+    # Initialize other passenger attributes
     time_waiting = jnp.zeros(num_passengers)
     time_in_vehicle = jnp.zeros(num_passengers)
     statuses = jnp.full(num_passengers, PassengerStatus.NOT_IN_SYSTEM)
@@ -206,7 +209,7 @@ def create_initial_passengers(
     return Passengers(
         origins=origins,
         destinations=destinations,
-        desired_departure_times=desired_departure_times,
+        desired_departure_times=entry_times,
         time_waiting=time_waiting,
         time_in_vehicle=time_in_vehicle,
         statuses=statuses,

@@ -44,15 +44,29 @@ class MandlTorso(hk.Module):
         self.model_size = transformer_num_heads * transformer_key_size
         self.embedding_size = 64  # Fixed size for initial embeddings
 
+    def _reshape_travel_times(
+        self, travel_times_flat: jnp.ndarray, obs: Observation
+    ) -> jnp.ndarray:
+        batch_size = travel_times_flat.shape[0]
+        num_nodes = len(obs.is_terminal[0])
+        return travel_times_flat.reshape(batch_size, num_nodes, num_nodes)
+
+    def _reshape_node_coordinates(self, node_coords_flat: jnp.ndarray) -> jnp.ndarray:
+        # Extract batch size and reshape appropriately
+        batch_size = node_coords_flat.shape[0]
+        num_nodes = node_coords_flat.shape[1] // 2  # Since each node has 2 coordinates
+        return node_coords_flat.reshape(batch_size, num_nodes, 2)
+
     def __call__(self, obs: Observation) -> chex.Array:
+        travel_times = self._reshape_travel_times(obs.travel_times, obs)
+        node_coordinates = obs.node_coordinates
+
         # 1. Network Structure Embedding
-        network_features = self._embed_network_structure(
-            obs.network.node_coordinates, obs.network.travel_times
-        )
+        network_features = self._embed_network_structure(node_coordinates, travel_times)
 
         # 2. Route Embedding
         route_features = self._embed_routes(
-            obs.routes.stops, obs.routes.frequencies, obs.routes.types == RouteType.FLEXIBLE
+            obs.route_stops, obs.route_frequencies, obs.route_types == RouteType.FLEXIBLE
         )
 
         # 3. Passenger Embedding
@@ -109,7 +123,7 @@ class MandlTorso(hk.Module):
 
         # Prevent routes from attending to other routes
         route_start = 1  # After network features
-        route_end = route_start + obs.routes.stops.shape[1]
+        route_end = route_start + obs.route_stops.shape[1]
         attention_mask = attention_mask.at[:, 0, route_start:route_end, route_start:route_end].set(
             0
         )
@@ -319,8 +333,8 @@ def make_actor_critic_networks_mandl(
 
     def actor_fn(obs: Observation) -> chex.Array:
         # Get numbers without batch dimension
-        num_nodes = obs.network.travel_times.shape[1]  # Use shape[1] instead of shape[0]
-        num_routes = obs.routes.stops.shape[1]  # Use shape[1] instead of shape[0]
+        num_nodes = obs.travel_times.shape[0]  # This should be correct now
+        num_routes = obs.route_stops.shape[0]
 
         torso = MandlTorso(
             num_nodes=num_nodes,
@@ -336,7 +350,10 @@ def make_actor_critic_networks_mandl(
         route_embeddings = embeddings[:, 1 : 1 + num_routes]  # Shape: (B, R, model_size)
 
         # Project each route embedding to its action logits
-        logits = hk.Linear(num_nodes + 1)(route_embeddings)  # Shape: (B, R, num_nodes+1)
+        # Changed here: use num_nodes + 1 from the action mask shape
+        action_mask_shape = obs.action_mask.shape
+        num_actions = action_mask_shape[-1]  # This should be num_nodes + 1
+        logits = hk.Linear(num_actions)(route_embeddings)  # Shape: (B, R, num_actions)
 
         # Add batch dimension to mask if needed
         action_mask = obs.action_mask
@@ -349,14 +366,10 @@ def make_actor_critic_networks_mandl(
         # Scale masked logits
         scaled_logits = 10 * jnp.tanh(masked_logits)
 
-        # Reshape to have a leading 1 dimension that can be squeezed
-        # and ensure the result will be (num_routes,)
-        # scaled_logits = scaled_logits.reshape(1, num_routes, -1)  # Shape: (1, R, num_nodes+1)
-
         return scaled_logits
 
     def critic_fn(obs: Observation) -> chex.Array:
-        num_nodes = obs.network.is_terminal.shape[0]
+        num_nodes = obs.is_terminal.shape[0]
         torso = MandlTorso(
             num_nodes=num_nodes,
             transformer_num_blocks=transformer_num_blocks,

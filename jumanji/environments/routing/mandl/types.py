@@ -174,19 +174,37 @@ class State:
 
 @dataclass
 class Observation:
-    """
-    Represents the observable state provided to the agent.
-    """
+    """Represents the observable state provided to the agent."""
 
-    network: "NetworkData"
-    routes: "RouteBatch"
-    fleet_positions: Int[Array, " num_vehicles 2"]
-    origins: Int[Array, " num_passengers"]
-    destinations: Int[Array, " num_passengers"]
-    desired_departure_times: Float[Array, " num_passengers"]
-    passenger_statuses: Int[Array, " num_passengers"]
+    # Network data (flattened from NetworkData
+    num_nodes: Int[Array, ""]
+    node_coordinates: Float[Array, "{self.num_nodes}*2"]  # noqa: F821
+    travel_times: Float[Array, "{self.num_nodes}*{self.num_nodes}"]  # noqa: F821
+    is_terminal: Bool[Array, "{self.num_nodes}"]  # noqa: F821
+
+    # Routes data (flattened from RouteBatch)
+    num_routes: Int[Array, ""]
+    max_route_length: Int[Array, ""]
+    route_types: Int[Array, "{self.num_routes}"]  # noqa: F821
+    route_stops: Int[Array, "{self.num_routes} {self.max_route_length}"]
+    route_frequencies: Float[Array, "{self.num_routes}"]  # noqa: F821
+    num_flex_routes: Int[Array, ""]
+    num_fix_routes: Int[Array, ""]
+
+    # Fleet data
+    num_vehicles: Int[Array, ""]
+    fleet_positions: Int[Array, "{self.num_vehicles} 2"]
+
+    # Passenger data
+    num_passengers: Int[Array, ""]
+    origins: Int[Array, "{self.num_passengers}"]  # noqa: F821
+    destinations: Int[Array, "{self.num_passengers}"]  # noqa: F821
+    desired_departure_times: Float[Array, "{self.num_passengers}"]  # noqa: F821
+    passenger_statuses: Int[Array, "{self.num_passengers}"]  # noqa: F821
+
+    # Environment state
     current_time: Float[Array, ""]
-    action_mask: Bool[Array, "num_routes {self.netwowrk.num_nodes+1}"]
+    action_mask: Bool[Array, "{self.num_routes} {self.num_nodes}+1"]
 
 
 @dataclass
