@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jumanji"
 authors = [{ name = "InstaDeep Ltd", email = "clement.bonnet16@gmail.com" }]
-dynamic = ["version", "dependencies", "optional-dependencies"]
+dynamic = ["version"]
 license = { file = "LICENSE" }
 description = "A diverse suite of scalable reinforcement learning environments in JAX"
 readme = "README.md"
@@ -25,6 +25,16 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "License :: OSI Approved :: Apache Software License",
 ]
+dependencies = [
+    "chex>=0.1.3",
+    "dm-env>=1.5",
+    "gymnasium>=1.0",
+    "huggingface-hub",
+    "jax>=0.5.2",
+    "matplotlib==3.7.4",
+    "pillow>=9.0.0",
+    "typing-extensions>=4.0.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["jumanji*"]
@@ -34,9 +44,6 @@ include = ["jumanji*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "jumanji.version.__version__" }
-dependencies = { file = "requirements/requirements.txt" }
-optional-dependencies.dev = { file = ["requirements/requirements-dev.txt"] }
-optional-dependencies.train = { file = ["requirements/requirements-train.txt"] }
 
 
 [project.urls]
@@ -115,3 +122,46 @@ ignore = [
 "__init__.py" = [
     "F401",
 ] # Ignore `F401` (import violations) in all `__init__.py` files.
+
+[dependency-groups]
+train = [
+    "dm-haiku>=0.0.13",
+    "hydra-core==1.3",
+    "neptune-client==0.16.15",
+    "optax>=0.1.4",
+    "rlax>=0.1.4",
+    "tensorboardX==2.5.1",
+    "tqdm>=4.64.1",
+]
+dev = [
+    "coverage>=7.6.12",
+    "livereload>=2.7.1",
+    "mkdocs==1.6.1",
+    "mkdocs-autorefs==1.2.0",
+    "mkdocs-git-revision-date-plugin==0.3.2",
+    "mkdocs-include-markdown-plugin==7.1.1",
+    "mkdocs-material==9.5.45",
+    "mkdocs-mermaid2-plugin==1.1.0",
+    "mkdocstrings[python]==0.27.0",
+    "mknotebooks==0.8.0",
+    "mypy>=1.15.0",
+    "pandas-stubs>=2.2.3.250308",
+    "pre-commit>=4.1.0",
+    "promise>=2.3",
+    "pymdown-extensions>=10.14.3",
+    "pytest==7.0.1",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "pytest-parallel>=0.1.1",
+    "pytest-xdist>=3.6.1",
+    "scipy>=1.7.3",
+    "testfixtures>=8.3.0",
+]
+mandl = [
+    "beartype>=0.20.0",
+    "jaxtyping>=0.2.38",
+    "sbx-rl>=0.20.0",
+    "stable-baselines3>=2.4.0",
+    "submitit>=1.5.2",
+    "tyro>=0.9.17",
+]
