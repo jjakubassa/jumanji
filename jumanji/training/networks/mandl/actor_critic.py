@@ -19,7 +19,7 @@ import haiku as hk
 import jax.numpy as jnp
 
 from jumanji.environments.routing.mandl import Mandl, Observation
-from jumanji.environments.routing.mandl.types import PassengerStatus, RouteType
+from jumanji.environments.routing.mandl.types import RouteType
 from jumanji.training.networks.actor_critic import ActorCriticNetworks, FeedForwardNetwork
 from jumanji.training.networks.parametric_distribution import MultiCategoricalParametricDistribution
 from jumanji.training.networks.transformer_block import TransformerBlock
@@ -59,10 +59,9 @@ class MandlTorso(hk.Module):
 
     def __call__(self, obs: Observation) -> chex.Array:
         travel_times = self._reshape_travel_times(obs.travel_times, obs)
-        node_coordinates = obs.node_coordinates
 
         # 1. Network Structure Embedding
-        network_features = self._embed_network_structure(node_coordinates, travel_times)
+        network_features = self._embed_network_structure(travel_times)
 
         # 2. Route Embedding
         route_features = self._embed_routes(
@@ -71,7 +70,10 @@ class MandlTorso(hk.Module):
 
         # 3. Passenger Embedding
         passenger_features = self._embed_passengers(
-            obs.origins, obs.destinations, obs.passenger_statuses, obs.desired_departure_times
+            obs.future_demand,
+            obs.waiting_demand,
+            obs.transferring_demand,
+            obs,
         )
 
         # Project all features to model_size
@@ -158,9 +160,7 @@ class MandlTorso(hk.Module):
         )
         return combined_features
 
-    def _embed_network_structure(
-        self, node_coordinates: jnp.ndarray, travel_times: jnp.ndarray
-    ) -> jnp.ndarray:
+    def _embed_network_structure(self, travel_times: jnp.ndarray) -> jnp.ndarray:
         # Create features from travel times matrix
         edge_features = jnp.where(
             travel_times == jnp.inf, 0.0, travel_times
@@ -273,41 +273,56 @@ class MandlTorso(hk.Module):
 
     def _embed_passengers(
         self,
-        origins: jnp.ndarray,  # Shape: (batch_size, num_passengers)
-        destinations: jnp.ndarray,  # Shape: (batch_size, num_passengers)
-        statuses: jnp.ndarray,  # Shape: (batch_size, num_passengers)
-        desired_departure_times: jnp.ndarray,  # Shape: (batch_size, num_passengers)
+        future_demand: jnp.ndarray,
+        waiting_demand: jnp.ndarray,
+        transferring_demand: jnp.ndarray,
+        obs: Observation,
     ) -> jnp.ndarray:
-        # Create feature vector: for each passenger combine
-        # (origin, destination, desired_time, is_waiting)
-        is_waiting = (statuses == PassengerStatus.WAITING).astype(jnp.float32)
-        passenger_features = jnp.stack(
-            [
-                origins.astype(jnp.float32),
-                destinations.astype(jnp.float32),
-                desired_departure_times,
-                is_waiting,
-            ],
-            axis=-1,
-        )  # Shape: (batch_size, num_passengers, 4)
+        """Embed aggregated passenger demand information."""
+        # Reshape the flattened OD matrices back to 2D
+        batch_size = future_demand.shape[0]
+        num_nodes = len(obs.is_terminal[0])
 
-        # First MLP to process each passenger independently
+        future_demand = future_demand.reshape(batch_size, num_nodes, num_nodes)
+        waiting_demand = waiting_demand.reshape(batch_size, num_nodes, num_nodes)
+        transferring_demand = transferring_demand.reshape(batch_size, num_nodes, num_nodes)
+
+        # Calculate features for each node
+        def calculate_node_features(demand_matrix: jnp.ndarray) -> jnp.ndarray:
+            # Outgoing demand from each node
+            outgoing = demand_matrix.sum(axis=2)  # Shape: (batch_size, num_nodes)
+            # Incoming demand to each node
+            incoming = demand_matrix.sum(axis=1)  # Shape: (batch_size, num_nodes)
+            # Total demand for each node
+            total = outgoing + incoming  # Shape: (batch_size, num_nodes)
+            return jnp.stack([outgoing, incoming, total], axis=-1)  # (batch_size, num_nodes, 3)
+
+        # Calculate features for each type of demand
+        future_features = calculate_node_features(future_demand)
+        waiting_features = calculate_node_features(waiting_demand)
+        transfer_features = calculate_node_features(transferring_demand)
+
+        # Combine all features
+        combined_features = jnp.concatenate(
+            [future_features, waiting_features, transfer_features], axis=-1
+        )  # Shape: (batch_size, num_nodes, 9)
+
+        # Process through MLP
         passenger_mlp = hk.Sequential(
             [
-                hk.Linear(32),
+                hk.Linear(64),
                 jnp.tanh,
                 hk.Linear(32),
                 jnp.tanh,
             ]
         )
 
-        # Process each passenger independently
-        batch_size, num_passengers, feature_dim = passenger_features.shape
-        reshaped_features = passenger_features.reshape(-1, feature_dim)
+        # Process each node's features independently
+        reshaped_features = combined_features.reshape(-1, combined_features.shape[-1])
         processed_features = passenger_mlp(reshaped_features)
-        processed_features = processed_features.reshape(batch_size, num_passengers, -1)
+        processed_features = processed_features.reshape(batch_size, num_nodes, -1)
 
-        # Pool across passengers
+        # Pool across nodes to get a single embedding per batch
         pooled_features = jnp.mean(processed_features, axis=1)  # Shape: (batch_size, 32)
 
         # Final projection to embedding size

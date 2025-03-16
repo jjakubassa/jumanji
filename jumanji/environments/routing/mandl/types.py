@@ -178,29 +178,26 @@ class Observation:
 
     # Network data (flattened from NetworkData
     num_nodes: Int[Array, ""]
-    node_coordinates: Float[Array, "{self.num_nodes}*2"]  # noqa: F821
     travel_times: Float[Array, "{self.num_nodes}*{self.num_nodes}"]  # noqa: F821
     is_terminal: Bool[Array, "{self.num_nodes}"]  # noqa: F821
 
     # Routes data (flattened from RouteBatch)
     num_routes: Int[Array, ""]
+    num_flex_routes: Int[Array, ""]
+    num_fix_routes: Int[Array, ""]
     max_route_length: Int[Array, ""]
     route_types: Int[Array, "{self.num_routes}"]  # noqa: F821
     route_stops: Int[Array, "{self.num_routes} {self.max_route_length}"]
     route_frequencies: Float[Array, "{self.num_routes}"]  # noqa: F821
-    num_flex_routes: Int[Array, ""]
-    num_fix_routes: Int[Array, ""]
 
     # Fleet data
     num_vehicles: Int[Array, ""]
     fleet_positions: Int[Array, "{self.num_vehicles} 2"]
 
     # Passenger data
-    num_passengers: Int[Array, ""]
-    origins: Int[Array, "{self.num_passengers}"]  # noqa: F821
-    destinations: Int[Array, "{self.num_passengers}"]  # noqa: F821
-    desired_departure_times: Float[Array, "{self.num_passengers}"]  # noqa: F821
-    passenger_statuses: Int[Array, "{self.num_passengers}"]  # noqa: F821
+    future_demand: Float[Array, "{self.num_nodes}*{self.num_nodes}"]  # noqa: F821
+    waiting_demand: Float[Array, "{self.num_nodes}*{self.num_nodes}"]  # noqa: F821
+    transferring_demand: Float[Array, "{self.num_nodes}*{self.num_nodes}"]  # noqa: F821
 
     # Environment state
     current_time: Float[Array, ""]

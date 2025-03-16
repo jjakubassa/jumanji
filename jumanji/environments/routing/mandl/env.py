@@ -59,10 +59,13 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         self,
         viewer: Optional[Viewer] = None,
         network_name: Literal["mandl1", "ceder1"] = "mandl1",
-        runtime: float = 100.0,
+        runtime: float = 150.0,
         vehicle_capacity: int = 50,
-        num_flex_routes: int = 0,
+        solution_name: Optional[str] = None,  # None means no solution
+        num_fix_routes: int = 0,
+        num_flex_routes: int = 16,
         max_route_length: int = 8,
+        num_vehicles_per_fixed_route: int = 4,
         buffer_time: float = 100.0,
         passenger_init_mode: Literal[
             "evenly_spaced", "rush_hour", "uniform_random", "all_at_start"
@@ -74,6 +77,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         self.passenger_init_mode: Final = passenger_init_mode
         self.vehicle_capacity: Final = vehicle_capacity
         self.buffer_time: Final = buffer_time
+        self.num_vehicles_per_fixed_route = num_vehicles_per_fixed_route
         self._viewer = viewer or MandlViewer(
             name="Mandl",
             render_mode="human",
@@ -81,10 +85,23 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
 
         # Load all static data once during initialization
         self._network_data = load_network_data(network_name)
-        self._routes, self._vehicles_per_route = load_solution_data(network_name)
+        self._routes: list[list[int]] = []
+        self._vehicles_per_route: list[int] = []
+        if solution_name is not None:
+            self._routes, self._vehicles_per_route = load_solution_data(solution_name)
+            # num_fix_routes now represents additional fixed routes beyond solution
+            self.num_fix_routes = len(self._routes) + max(0, num_fix_routes)
+            print(f"\nUsing solution with {len(self._routes)} routes")
+            print(f"Adding {num_fix_routes} additional fixed routes")
+            print(f"Total fixed routes: {self.num_fix_routes}")
+        else:
+            # If no solution specified, num_fix_routes is the total number of fixed routes
+            self.num_fix_routes = max(0, num_fix_routes)
+            print("\nNo solution used")
+            print(f"Creating {self.num_fix_routes} fixed routes")
 
         # Check if solution routes exceed max_stops
-        max_solution_length = max(len(route) for route in self._routes)
+        max_solution_length = max(len(route) for route in self._routes) if self._routes else 0
         if max_solution_length > max_route_length:
             print(
                 f"WARNING: Solution routes contain up to {max_solution_length} stops, "
@@ -95,13 +112,20 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
 
         # Create static components once
         self._route_batch = create_initial_routes(
-            self._routes, num_flex_routes=self.num_flex_routes, max_stops=self.max_route_length
-        )
-        self._initial_fleet = create_initial_fleet(
             self._routes,
+            num_fix_routes=self.num_fix_routes,
+            num_flex_routes=self.num_flex_routes,
+            network_data=self._network_data,  # Pass network data
+            max_stops=self.max_route_length,
+            key=None,  # Pass random key
+        )
+
+        self._initial_fleet = create_initial_fleet(
+            self._route_batch,  # Pass route_batch instead of routes
             self._vehicles_per_route,
-            self._network_data.travel_times,
+            self._network_data,
             self.vehicle_capacity,
+            num_vehicles_per_fixed_route=self.num_vehicles_per_fixed_route,
         )
 
         # Load passenger demand data
@@ -310,8 +334,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
     @cached_property
     def observation_spec(self) -> specs.Spec[Observation]:
         """Returns the observation spec."""
-        num_nodes = self._network_data.num_nodes
-        max_passengers = len(self._demand_data)
+        num_nodes = len(self._network_data.is_terminal)
         num_routes = self._route_batch.num_routes
         max_route_length = self.max_route_length
         num_vehicles = self._initial_fleet.num_vehicles
@@ -325,12 +348,6 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 dtype=int,
                 minimum=0,
                 maximum=num_nodes,
-            ),
-            node_coordinates=specs.BoundedArray(
-                shape=(num_nodes * 2,),
-                dtype=float,
-                minimum=0.0,
-                maximum=1.0,
             ),
             travel_times=specs.BoundedArray(
                 shape=(num_nodes * num_nodes,),
@@ -400,36 +417,24 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 minimum=0,
                 maximum=num_nodes - 1,
             ),
-            # Passenger data specs
-            num_passengers=specs.BoundedArray(
-                shape=(),
-                dtype=int,
-                minimum=0,
-                maximum=max_passengers,
-            ),
-            origins=specs.BoundedArray(
-                shape=(max_passengers,),
-                dtype=int,
-                minimum=0,
-                maximum=num_nodes - 1,
-            ),
-            destinations=specs.BoundedArray(
-                shape=(max_passengers,),
-                dtype=int,
-                minimum=0,
-                maximum=num_nodes - 1,
-            ),
-            desired_departure_times=specs.BoundedArray(
-                shape=(max_passengers,),
+            # Aggregated passenger demand specs
+            future_demand=specs.BoundedArray(
+                shape=(num_nodes * num_nodes,),
                 dtype=float,
                 minimum=0.0,
-                maximum=self.runtime,
+                maximum=float("inf"),
             ),
-            passenger_statuses=specs.BoundedArray(
-                shape=(max_passengers,),
-                dtype=int,
-                minimum=0,
-                maximum=4,  # Number of PassengerStatus values
+            waiting_demand=specs.BoundedArray(
+                shape=(num_nodes * num_nodes,),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
+            ),
+            transferring_demand=specs.BoundedArray(
+                shape=(num_nodes * num_nodes,),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
             ),
             # Environment state specs
             current_time=specs.BoundedArray(
@@ -457,7 +462,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         """
         return specs.MultiDiscreteArray(
             num_values=jnp.full(
-                shape=(self._route_batch.num_routes,),  # One action per route
+                shape=(1,),
                 fill_value=self._network_data.num_nodes
                 + 1,  # num_nodes + 1 possible actions per route
                 dtype=jnp.int32,
@@ -483,15 +488,28 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             self._viewer.close()
 
     def get_observation(self, state: State) -> Observation:
-        """Creates observation from current state."""
-        num_nodes = jnp.array(len(state.network.is_terminal))
-        num_vehicles = state.fleet.num_vehicles
+        """Creates observation from current state with aggregated passenger information."""
+        num_nodes = len(state.network.is_terminal)
+
+        # Create passenger demand matrix (num_nodes x num_nodes)
+        waiting_demand = jnp.zeros((num_nodes, num_nodes))
+        transferring_demand = jnp.zeros((num_nodes, num_nodes))
+
+        # Aggregate waiting passengers by OD pair
+        future_mask = state.passengers.statuses == PassengerStatus.NOT_IN_SYSTEM
+        waiting_mask = state.passengers.statuses == PassengerStatus.WAITING
+        transferring_mask = state.passengers.statuses == PassengerStatus.TRANSFERRING
+        origins = state.passengers.origins
+        destinations = state.passengers.destinations
+
+        future_demand = waiting_demand.at[origins, destinations].add(future_mask)
+        waiting_demand = waiting_demand.at[origins, destinations].add(waiting_mask)
+        transferring_demand = transferring_demand.at[origins, destinations].add(transferring_mask)
 
         return Observation(
             # Network data
-            num_nodes=num_nodes,
-            node_coordinates=state.network.node_coordinates,
-            travel_times=state.network.travel_times,
+            num_nodes=jnp.array(num_nodes),
+            travel_times=state.network.travel_times.flatten(),
             is_terminal=state.network.is_terminal,
             # Routes data
             num_routes=state.routes.num_routes,
@@ -502,14 +520,12 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             num_flex_routes=state.routes.num_flex_routes,
             num_fix_routes=state.routes.num_fix_routes,
             # Fleet data
-            num_vehicles=num_vehicles,
+            num_vehicles=jnp.array(state.fleet.num_vehicles),
             fleet_positions=state.fleet.current_edges,
-            # Passenger data
-            num_passengers=jnp.array(state.passengers.num_passengers),
-            origins=state.passengers.origins,
-            destinations=state.passengers.destinations,
-            desired_departure_times=state.passengers.desired_departure_times,
-            passenger_statuses=state.passengers.statuses,
+            # Aggregated passenger data
+            future_demand=future_demand.flatten(),
+            waiting_demand=waiting_demand.flatten(),
+            transferring_demand=transferring_demand.flatten(),
             # Environment state
             current_time=state.current_time,
             action_mask=self.get_action_mask(state),
