@@ -29,6 +29,7 @@ from sb3_contrib import MaskablePPO
 # from sbx import PPO
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
+from torch.utils.checkpoint import Optional
 
 from jumanji.environments.routing.mandl import Mandl
 from jumanji.wrappers import JumanjiToGymWrapper
@@ -144,8 +145,13 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
 def make_env(
     rank: int,
     network_name: Literal["mandl1", "ceder1"],
+    solution_name: Optional[Literal["mandl1", "ceder1"]],
+    runtime: float,
+    buffer_time: float,
     num_flex_routes: int,
+    num_fix_routes: int,
     max_route_length: int,
+    num_vehicles_per_fixed_route: int,
     vehicle_capacity: int,
     passenger_init_mode: Literal["evenly_spaced", "rush_hour", "uniform_random", "all_at_start"],
 ) -> Callable[[], gym.Env]:
@@ -157,21 +163,18 @@ def make_env(
     def _init() -> gym.Env:
         env = Mandl(
             network_name=network_name,
+            solution_name=solution_name,
+            runtime=runtime,
+            buffer_time=buffer_time,
+            num_fix_routes=num_fix_routes,
             num_flex_routes=num_flex_routes,
             max_route_length=max_route_length,
+            num_vehicles_per_fixed_route=num_vehicles_per_fixed_route,
             vehicle_capacity=vehicle_capacity,
             passenger_init_mode=passenger_init_mode,
         )
         env = JumanjiToGymWrapper(env)
         env.render_mode = "rgb_array"
-
-        # def mask_fn(env: gym.Env) -> np.ndarray:
-        #     """Return the action mask from the current state."""
-        #     # Access the unwrapped Mandl environment's state and get action mask
-        #     if env._state is not None:
-        #         return env.unwrapped.get_action_mask(env._state)
-
-        # env = ActionMasker(env, mask_fn)
         return env
 
     return _init
@@ -183,8 +186,13 @@ class TrainingConfig:
 
     # Environment configuration
     network_name: Literal["ceder1", "mandl1"] = "ceder1"
+    solution_name: Optional[Literal["ceder1", "mandl1"]] = None
+    runtime: float = 150
+    buffer_time: float = 10
     num_flex_routes: int = 16
+    num_fix_routes: int = 0
     max_route_length: int = 8
+    num_vehicles_per_fixed_route: int = 4
     vehicle_capacity: int = 50
     passenger_init_mode: Literal["evenly_spaced", "rush_hour", "uniform_random", "all_at_start"] = (
         "evenly_spaced"
@@ -249,24 +257,19 @@ class Trainer:
 
     def train(self) -> str:
         """Train the agent and return the path to the saved model."""
-        # Create and test a single environment first
-        test_env = make_env(
-            0,
-            self.config.network_name,
-            self.config.num_flex_routes,
-            max_route_length=self.config.max_route_length,
-            vehicle_capacity=self.config.vehicle_capacity,
-            passenger_init_mode=self.config.passenger_init_mode,
-        )()
-
         # Create parallel environments
         vec_env = SubprocVecEnv(
             [
                 make_env(
                     i,
                     network_name=self.config.network_name,
+                    solution_name=self.config.solution_name,
+                    runtime=self.config.runtime,
+                    buffer_time=self.config.buffer_time,
+                    num_fix_routes=self.config.num_fix_routes,
                     num_flex_routes=self.config.num_flex_routes,
                     max_route_length=self.config.max_route_length,
+                    num_vehicles_per_fixed_route=self.config.num_vehicles_per_fixed_route,
                     vehicle_capacity=self.config.vehicle_capacity,
                     passenger_init_mode=self.config.passenger_init_mode,
                 )
@@ -292,7 +295,7 @@ class Trainer:
         }
 
         # Create tensorboard log directory
-        tensorboard_log = os.path.join(self.config.output_dir, test_env.unwrapped.network_name)
+        tensorboard_log = os.path.join(self.config.output_dir, self.config.network_name)
 
         try:
             # Create and train model
