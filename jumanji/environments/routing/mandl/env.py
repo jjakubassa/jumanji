@@ -327,7 +327,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         1. We've reached runtime
         2. All passengers have completed their journeys
         """
-        time_done = state.current_time >= self.runtime
+        time_done = state.current_time >= self.runtime - 1  # account for timestep t=0 -> t=1
         passengers_done = jnp.all(state.passengers.statuses == PassengerStatus.COMPLETED)
         return time_done | passengers_done
 
@@ -462,7 +462,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         """
         return specs.MultiDiscreteArray(
             num_values=jnp.full(
-                shape=(1,),
+                shape=(self.num_flex_routes + self.num_fix_routes,),
                 fill_value=self._network_data.num_nodes
                 + 1,  # num_nodes + 1 possible actions per route
                 dtype=jnp.int32,

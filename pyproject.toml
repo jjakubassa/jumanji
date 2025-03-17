@@ -160,6 +160,7 @@ dev = [
 mandl = [
     "beartype>=0.20.0",
     "jaxtyping>=0.2.38",
+    "sb3-contrib>=2.5.0",
     "sbx-rl>=0.20.0",
     "stable-baselines3>=2.4.0",
     "submitit>=1.5.2",

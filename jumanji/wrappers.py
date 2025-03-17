@@ -604,6 +604,7 @@ class JumanjiToGymWrapper(gym.Env, Generic[State, ActionSpec, Observation]):
         self._state = None
         self.observation_space = specs.jumanji_specs_to_gym_spaces(self._env.observation_spec)
         self.action_space = specs.jumanji_specs_to_gym_spaces(self._env.action_spec)
+        self._action_masks: Optional[Any] = None
 
         def reset(key: chex.PRNGKey) -> Tuple[State, Observation, Optional[Dict]]:
             """Reset function of a Jumanji environment to be jitted."""
@@ -643,6 +644,7 @@ class JumanjiToGymWrapper(gym.Env, Generic[State, ActionSpec, Observation]):
 
         # Convert the observation to a numpy array or a nested dict thereof
         obs = jumanji_to_gym_obs(obs)
+        self._action_masks = obs["action_mask"]
 
         return obs, jax.device_get(extras)
 
@@ -671,6 +673,7 @@ class JumanjiToGymWrapper(gym.Env, Generic[State, ActionSpec, Observation]):
         truncated = bool(trunc)
         info = jax.device_get(extras)
 
+        self._action_masks = obs["action_mask"]
         return obs, reward, terminated, truncated, info
 
     def seed(self, seed: int = 0) -> None:
@@ -699,6 +702,9 @@ class JumanjiToGymWrapper(gym.Env, Generic[State, ActionSpec, Observation]):
     @property
     def unwrapped(self) -> Environment[State, ActionSpec, Observation]:
         return self._env
+
+    def action_masks(self) -> Any:
+        return self._action_masks
 
 
 def jumanji_to_gym_obs(observation: Observation) -> GymObservation:

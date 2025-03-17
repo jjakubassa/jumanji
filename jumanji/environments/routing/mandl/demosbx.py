@@ -14,130 +14,140 @@
 
 import multiprocessing
 import os
+import traceback
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Literal, Tuple
+from typing import Callable, Dict, Literal
 
 import gymnasium as gym
-import numpy as np
 import submitit
+import torch as th
+import torch.nn as nn
 import tyro
-from gymnasium import spaces
-from numpy.typing import NDArray
-from sbx import PPO
+from rich.traceback import install
+from sb3_contrib import MaskablePPO
+
+# from sbx import PPO
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 
-from jumanji import Environment
 from jumanji.environments.routing.mandl import Mandl
 from jumanji.wrappers import JumanjiToGymWrapper
 
+install()
 
-class FlattenDictWrapper(gym.Wrapper):
-    def __init__(self, env: Environment) -> None:
-        super().__init__(env)
-        self._eps: float = 1e-8
 
-        # Initialize observation space immediately
-        dummy_obs, _ = env.reset()  # type: ignore
-        flattened = self._flatten_obs(dummy_obs)
-        self.observation_space = spaces.Box(low=0, high=1, shape=flattened.shape, dtype=np.float32)
+class MandlFeaturesExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space: gym.spaces.Dict, features_dim: int = 256):
+        super().__init__(observation_space, features_dim)
 
-    def _preprocess_value(self, value: Any, key: str) -> NDArray[np.float32]:
-        """Preprocess values to avoid numerical issues."""
-        arr: NDArray = np.array(value, dtype=np.float32)
+        # Constants for handling inf values
+        self.inf_replacement = 2000.0
+        self.max_finite_value = 1000.0
 
-        # Always flatten first
-        arr = arr.flatten()
+        # Get dimensions from observation space
+        self.num_routes = observation_space.spaces["action_mask"].shape[0]
+        self.num_nodes = observation_space.spaces["is_terminal"].shape[0]
+        self.num_vehicles = observation_space.spaces["fleet_positions"].shape[0]
 
-        if key == "travel_times":
-            # For travel times matrix, handle inf values specially
-            reachable: NDArray[np.bool_] = ~np.isinf(arr)
-            finite_arr: NDArray = arr[reachable]
-            if finite_arr.size > 0:
-                max_finite: float = finite_arr.max()
-                min_finite: float = finite_arr.min()
-                arr[reachable] = (
-                    0.5 * (finite_arr - min_finite) / (max_finite - min_finite + self._eps)
-                )
-                arr[~reachable] = 1.0
+        # Calculate expected input sizes
+        action_mask_size = self.num_routes * (self.num_nodes + 1)  # Include no-op action
+        travel_times_size = self.num_nodes * self.num_nodes
+        route_stops_size = self.num_routes * observation_space.spaces["route_stops"].shape[1]
+        fleet_positions_size = self.num_vehicles * 2
 
-        elif key == "node_coordinates":
-            # Already normalized in [0,1]
-            pass
+        # Define extractors with correct input sizes
+        self.extractors = nn.ModuleDict(
+            {
+                "action_mask": nn.Sequential(
+                    nn.Flatten(), nn.Linear(action_mask_size, 64), nn.LayerNorm(64), nn.ReLU()
+                ),
+                "travel_times": nn.Sequential(
+                    nn.Linear(travel_times_size, 64), nn.LayerNorm(64), nn.ReLU()
+                ),
+                "route_stops": nn.Sequential(
+                    nn.Flatten(), nn.Linear(route_stops_size, 64), nn.LayerNorm(64), nn.ReLU()
+                ),
+                "fleet_positions": nn.Sequential(
+                    nn.Flatten(), nn.Linear(fleet_positions_size, 64), nn.LayerNorm(64), nn.ReLU()
+                ),
+                "route_types": nn.Sequential(
+                    nn.Linear(self.num_routes, 32), nn.LayerNorm(32), nn.ReLU()
+                ),
+                "route_frequencies": nn.Sequential(
+                    nn.Linear(self.num_routes, 32), nn.LayerNorm(32), nn.ReLU()
+                ),
+                "is_terminal": nn.Sequential(
+                    nn.Linear(self.num_nodes, 32), nn.LayerNorm(32), nn.ReLU()
+                ),
+            }
+        )
 
-        elif key in ["desired_departure_times"]:
-            min_val: float = arr.min()
-            max_val: float = arr.max()  # type: ignore
-            if max_val > min_val:
-                arr = (arr - min_val) / (max_val - min_val + self._eps)
-        elif key in ["passenger_statuses"]:
-            # Use fixed size one-hot encoding for passenger statuses
-            max_status: int = 5  # Number of possible status types
-            one_hot: NDArray[np.float32] = np.zeros((arr.size, max_status), dtype=np.float32)
-            for i, val in enumerate(arr):
-                if val >= 0:  # Handle -1 padding values
-                    one_hot[i, int(val)] = 1
-            arr = one_hot.flatten()
-        elif key in ["types", "destinations", "origins"]:
-            # One-hot encode other categorical variables
-            max_val: int = int(arr.max())  # type: ignore
-            one_hot = np.zeros((arr.size, max_val + 1), dtype=np.float32)
-            for i, val in enumerate(arr):
-                if val >= 0:  # Handle -1 padding values
-                    one_hot[i, int(val)] = 1
-            arr = one_hot.flatten()
+        # Calculate total feature size
+        total_features = (64 * 4) + (32 * 3)  # 4 large (64) + 3 small (32) feature extractors
 
-        return arr.astype(np.float32)
+        # Scalar features remain the same
+        self.scalar_features = [
+            "current_time",
+            "max_route_length",
+            "num_fix_routes",
+            "num_flex_routes",
+            "num_nodes",
+            "num_routes",
+            "num_vehicles",
+        ]
+        self.scalar_extractor = nn.Sequential(
+            nn.Linear(len(self.scalar_features), 32), nn.LayerNorm(32), nn.ReLU()
+        )
+        total_features += 32
 
-    def _flatten_value(self, value: Any, key: str = "") -> NDArray[np.float32]:
-        """Helper function to flatten individual values."""
-        if isinstance(value, dict):
-            nested_arrays: list[NDArray[np.float32]] = []
-            for k, v in sorted(value.items()):  # Sort keys for consistency
-                flat_v: NDArray[np.float32] = self._flatten_value(v, k)
-                nested_arrays.append(flat_v)
-            return np.concatenate(nested_arrays)
+        # Final combination layers
+        self.combination_layer = nn.Sequential(
+            nn.Linear(total_features, features_dim),
+            nn.LayerNorm(features_dim),
+            nn.ReLU(),
+            nn.Linear(features_dim, features_dim),
+            nn.LayerNorm(features_dim),
+            nn.Tanh(),
+        )
 
-        return self._preprocess_value(value, key)
+    def forward(self, observations: Dict[str, th.Tensor]) -> th.Tensor:
+        encoded_tensors = []
 
-    def _flatten_obs(self, obs: Dict[str, Any]) -> NDArray[np.float32]:
-        """Flatten the observation dictionary into a single array."""
-        flattened_arrays: list[NDArray[np.float32]] = []
+        # Handle scalar features first
+        scalar_features = th.stack(
+            [observations[key].squeeze(-1).float() for key in self.scalar_features], dim=1
+        )
+        encoded_tensors.append(self.scalar_extractor(scalar_features))
 
-        for key in sorted(obs.keys()):
-            if key == "action_mask":
-                continue
+        # Process other features
+        for key, extractor in self.extractors.items():
+            if key in observations:
+                x = observations[key].float()
 
-            value = obs[key]
+                # Special handling for infinite values
+                if key == "travel_times":
+                    x = th.where(th.isinf(x), th.tensor(self.inf_replacement, device=x.device), x)
+                    x = th.clamp(x, 0.0, self.inf_replacement)
+                    x = x / self.inf_replacement
+                elif key in ["future_demand", "waiting_demand", "transferring_demand"]:
+                    x = th.clamp(x, 0.0, self.max_finite_value)
+                    x = x / (x.max() + 1e-8)
 
-            try:
-                flat_value: NDArray[np.float32] = self._flatten_value(value, key)
-                if flat_value.size > 0:
-                    flattened_arrays.append(flat_value)
-            except Exception as e:
-                print(f"Error processing {key}: {e!s}")
-                raise
+                encoded = extractor(x)
+                encoded_tensors.append(encoded)
 
-        result: NDArray[np.float32] = np.concatenate(flattened_arrays)
-        return result.astype(np.float32)
-
-    def reset(self, **kwargs: Any) -> Tuple[NDArray[np.float32], Dict[str, Any]]:
-        obs, info = self.env.reset(**kwargs)
-        if self._observation_space is None:
-            flattened = self._flatten_obs(obs)
-            self.observation_space = spaces.Box(
-                low=0, high=1, shape=flattened.shape, dtype=np.float32
-            )
-        return self._flatten_obs(obs), info
-
-    def step(
-        self, action: NDArray[np.int_]
-    ) -> Tuple[NDArray[np.float32], float, bool, bool, Dict[str, Any]]:
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        return self._flatten_obs(obs), reward, terminated, truncated, info
+        # Combine all features
+        combined = th.cat(encoded_tensors, dim=1)
+        return self.combination_layer(combined)
 
 
 def make_env(
-    rank: int, network_name: Literal["mandl1", "ceder1"], num_flex_routes: int
+    rank: int,
+    network_name: Literal["mandl1", "ceder1"],
+    num_flex_routes: int,
+    max_route_length: int,
+    vehicle_capacity: int,
+    passenger_init_mode: Literal["evenly_spaced", "rush_hour", "uniform_random", "all_at_start"],
 ) -> Callable[[], gym.Env]:
     """
     Creates a function that creates an environment.
@@ -145,10 +155,23 @@ def make_env(
     """
 
     def _init() -> gym.Env:
-        env = Mandl(network_name=network_name, num_flex_routes=num_flex_routes)
+        env = Mandl(
+            network_name=network_name,
+            num_flex_routes=num_flex_routes,
+            max_route_length=max_route_length,
+            vehicle_capacity=vehicle_capacity,
+            passenger_init_mode=passenger_init_mode,
+        )
         env = JumanjiToGymWrapper(env)
         env.render_mode = "rgb_array"
-        env = FlattenDictWrapper(env)
+
+        # def mask_fn(env: gym.Env) -> np.ndarray:
+        #     """Return the action mask from the current state."""
+        #     # Access the unwrapped Mandl environment's state and get action mask
+        #     if env._state is not None:
+        #         return env.unwrapped.get_action_mask(env._state)
+
+        # env = ActionMasker(env, mask_fn)
         return env
 
     return _init
@@ -161,12 +184,17 @@ class TrainingConfig:
     # Environment configuration
     network_name: Literal["ceder1", "mandl1"] = "ceder1"
     num_flex_routes: int = 16
+    max_route_length: int = 8
+    vehicle_capacity: int = 50
+    passenger_init_mode: Literal["evenly_spaced", "rush_hour", "uniform_random", "all_at_start"] = (
+        "evenly_spaced"
+    )
 
     # Training configuration
     total_timesteps: int = int(1e6)
     learning_rate: float = 3e-4
-    batch_size: int = 64
-    n_steps: int = 2048 * 4  # Will be adjusted by num_envs
+    n_steps: int = 150  # * num_envs
+    batch_size: int = 150
 
     # Model configuration
     policy: str = "MlpPolicy"
@@ -216,42 +244,46 @@ class Trainer:
         # Create output directory
         os.makedirs(self.config.output_dir, exist_ok=True)
 
-        # Adjust batch size for parallel environments
-        self.config.n_steps = self.config.n_steps // self.config.num_envs
-
     def __call__(self) -> str:
         return self.train()
 
     def train(self) -> str:
         """Train the agent and return the path to the saved model."""
         # Create and test a single environment first
-        test_env = make_env(0, self.config.network_name, self.config.num_flex_routes)()
+        test_env = make_env(
+            0,
+            self.config.network_name,
+            self.config.num_flex_routes,
+            max_route_length=self.config.max_route_length,
+            vehicle_capacity=self.config.vehicle_capacity,
+            passenger_init_mode=self.config.passenger_init_mode,
+        )()
 
-        # Print action space information
-        print("\nAction Space Information:")
-        print(f"Action Space: {test_env.action_space}")
-        print(f"Action Space Shape: {test_env.action_space.shape}")
-        print(f"Action Space Sample: {test_env.action_space.sample()}")
-        print("\nObservation Space Information:")
-        print(f"Observation Space: {test_env.observation_space}")
-        print(f"Observation Space Shape: {test_env.observation_space.shape}")
-
-        # Test reset and action
-        obs, _ = test_env.reset()
-        print("\nObservation shape:", obs.shape)
-        test_env.close()
-
-        # Create multiple environments in parallel
+        # Create parallel environments
         vec_env = SubprocVecEnv(
             [
-                make_env(i, self.config.network_name, self.config.num_flex_routes)
+                make_env(
+                    i,
+                    network_name=self.config.network_name,
+                    num_flex_routes=self.config.num_flex_routes,
+                    max_route_length=self.config.max_route_length,
+                    vehicle_capacity=self.config.vehicle_capacity,
+                    passenger_init_mode=self.config.passenger_init_mode,
+                )
                 for i in range(self.config.num_envs)
             ]
         )
-        vec_env = VecMonitor(vec_env)
-        vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True)
 
-        print(f"\nCreated {self.config.num_envs} parallel environments")
+        vec_env = VecMonitor(vec_env)
+        vec_env = VecNormalize(
+            vec_env,
+            norm_obs=False,  # normalize observations
+            norm_reward=True,  # normalize rewards
+            # clip_obs=10.,  # clip observations to this value
+            # clip_reward=10.,  # clip rewards to this value
+            # gamma=0.99,  # discount factor
+            epsilon=1e-8,  # small constant to avoid division by zero
+        )
 
         # Set up network architecture
         net_arch = {
@@ -262,42 +294,38 @@ class Trainer:
         # Create tensorboard log directory
         tensorboard_log = os.path.join(self.config.output_dir, test_env.unwrapped.network_name)
 
-        # Create and train model
-        model = PPO(
-            self.config.policy,
-            vec_env,
-            verbose=1,
-            n_steps=self.config.n_steps,
-            batch_size=self.config.batch_size,
-            learning_rate=self.config.learning_rate,
-            tensorboard_log=tensorboard_log,
-            policy_kwargs={
-                "net_arch": net_arch,
-                "normalize_images": False,
-            },
-            device=self.config.device,
-        )
-
         try:
-            print(f"\n=== Starting training with {self.config.num_envs} parallel environments ===")
-            model.learn(
-                total_timesteps=self.config.total_timesteps, progress_bar=True, log_interval=1
+            # Create and train model
+            model = MaskablePPO(
+                policy="MultiInputPolicy",
+                env=vec_env,
+                verbose=1,
+                n_steps=self.config.n_steps,
+                batch_size=self.config.batch_size,
+                learning_rate=self.config.learning_rate,
+                tensorboard_log=tensorboard_log,
+                policy_kwargs={
+                    "net_arch": net_arch,
+                    "features_extractor_class": MandlFeaturesExtractor,
+                    "features_extractor_kwargs": {"features_dim": 256},
+                    "normalize_images": False,
+                },
+                device=self.config.device,
             )
 
-            # Save the model
+            # Train the model
+            model.learn(total_timesteps=self.config.total_timesteps, progress_bar=True)
+
+            # Save the trained model
             model_path = os.path.join(self.config.output_dir, f"{self.config.model_name}.zip")
             model.save(model_path)
-            print(f"Model saved to {model_path}")
-
             return model_path
 
         except Exception as e:
             print(f"\nError during training: {e}")
-            print("\nStack trace:")
-            import traceback
-
             traceback.print_exc()
             return "Training failed"
+
         finally:
             vec_env.close()
 
@@ -330,10 +358,6 @@ def main(config: TrainingConfig) -> None:
         print(f"Submitted job {job.job_id}")
         print(f"To check status: squeue -j {job.job_id}")
         print("To cancel: scancel", job.job_id)
-
-        # Optional: wait for completion
-        # model_path = job.result()
-        # print(f"Training completed. Model saved to: {model_path}")
     else:
         # Run directly
         trainer = Trainer(config)
