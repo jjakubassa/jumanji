@@ -60,13 +60,14 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         viewer: Optional[Viewer] = None,
         network_name: Literal["mandl1", "ceder1"] = "mandl1",
         runtime: float = 150.0,
+        buffer_time: float = 100.0,
         vehicle_capacity: int = 50,
         solution_name: Optional[str] = None,  # None means no solution
         num_fix_routes: int = 0,
         num_flex_routes: int = 16,
         max_route_length: int = 8,
+        allow_actions_fixed_routes: bool = True,
         num_vehicles_per_fixed_route: int = 4,
-        buffer_time: float = 100.0,
         passenger_init_mode: Literal[
             "evenly_spaced", "rush_hour", "uniform_random", "all_at_start"
         ] = "evenly_spaced",
@@ -78,6 +79,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         self.vehicle_capacity: Final = vehicle_capacity
         self.buffer_time: Final = buffer_time
         self.num_vehicles_per_fixed_route = num_vehicles_per_fixed_route
+        self.allow_actions_fixed_routes = allow_actions_fixed_routes
         self._viewer = viewer or MandlViewer(
             name="Mandl",
             render_mode="human",
@@ -574,19 +576,26 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         initial_routes = (last_stops == -1)[:, None]
         all_actions = jnp.ones_like(allowed_actions, dtype=bool)
 
-        # For fixed routes, only allow no-op
-        is_fixed_route = (state.routes.types == RouteType.FIXED)[:, None]
-        fixed_route_mask = jnp.zeros_like(allowed_actions)
-        fixed_route_mask = fixed_route_mask.at[:, -1].set(True)  # Only no-op allowed
+        if self.allow_actions_fixed_routes:
+            is_fixed_route = (state.routes.types == RouteType.FIXED)[:, None]
+            fixed_route_mask = jnp.zeros_like(allowed_actions)
+            fixed_route_mask = fixed_route_mask.at[:, -1].set(True)  # Only no-op allowed
 
-        # Combine all masks
-        action_mask = jnp.where(
-            is_fixed_route,
-            fixed_route_mask,  # Fixed routes: only no-op
-            jnp.where(
+            # Combine all masks
+            action_mask = jnp.where(
+                is_fixed_route,
+                fixed_route_mask,  # Fixed routes: only no-op
+                jnp.where(
+                    initial_routes,
+                    all_actions,  # Initial routes: all actions
+                    allowed_actions,  # Other cases: connected nodes + no-op
+                ),
+            )
+        else:
+            # Treat all routes the same way
+            action_mask = jnp.where(
                 initial_routes,
                 all_actions,  # Initial routes: all actions
                 allowed_actions,  # Other cases: connected nodes + no-op
-            ),
-        )
+            )
         return action_mask
