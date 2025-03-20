@@ -386,8 +386,8 @@ def create_initial_fleet(
         if not is_connected(network_data, jnp.array(from_node), jnp.array(to_node)):
             continue
 
-        # Calculate entire route time if more than two stops
-        if len(route) > 2:
+        # Calculate entire route time if more than one stop
+        if not is_flex_route:
             total_time = calculate_route_total_time(route, network_data.travel_times)
 
             # Get all edges in route
@@ -399,7 +399,7 @@ def create_initial_fleet(
 
         # Place vehicles
         for vehicle_idx in range(num_vehicles):
-            if is_flex_route or len(route) == 2:
+            if is_flex_route:
                 # Place at start of route for flexible routes or two-stop routes
                 edge = (from_node, to_node)
                 time_on_edge = 0.0
