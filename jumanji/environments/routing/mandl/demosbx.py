@@ -29,6 +29,9 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from torch.utils.checkpoint import Optional
 
+import wandb
+from wandb.integration.sb3 import WandbCallback
+
 install()
 
 
@@ -252,6 +255,11 @@ class TrainingConfig:
     slurm_cpus_per_task: int = 80
     slurm_time: int = 60 * 12  # minutes
 
+    # Wandb configuration
+    wandb_project: str = "thesis"
+    wandb_entity: Optional[str] = None
+    wandb_name: Optional[str] = None
+
 
 class Trainer:
     def __init__(self, config: TrainingConfig):
@@ -269,6 +277,15 @@ class Trainer:
 
     def train(self) -> str:
         """Train the agent and return the path to the saved model."""
+        if self.config.wandb_entity:
+            wandb.init(
+                project=self.config.wandb_project,
+                entity=self.config.wandb_entity,
+                name=self.config.wandb_name,
+                config=vars(self.config),
+                sync_tensorboard=True,
+            )
+
         # Create parallel environments
         vec_env = SubprocVecEnv(
             [
@@ -329,7 +346,12 @@ class Trainer:
             )
 
             # Train the model
-            model.learn(total_timesteps=self.config.total_timesteps, progress_bar=True)
+            progress_bar = not self.config.use_slurm
+            model.learn(
+                total_timesteps=self.config.total_timesteps,
+                progress_bar=progress_bar,
+                callback=WandbCallback(),
+            )
 
             # Save the trained model
             model_path = os.path.join(self.config.output_dir, f"{self.config.model_name}.zip")
@@ -342,6 +364,7 @@ class Trainer:
             return "Training failed"
 
         finally:
+            wandb.finish()
             vec_env.close()
 
 
