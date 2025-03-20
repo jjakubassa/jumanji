@@ -189,6 +189,9 @@ class Observation:
     route_types: Int[Array, "{self.num_routes}"]  # noqa: F821
     route_stops: Int[Array, "{self.num_routes} {self.max_route_length}"]
     route_frequencies: Float[Array, "{self.num_routes}"]  # noqa: F821
+    network_shortest_times: Float[Array, "{self.num_nodes}*{self.num_nodes}"]  # noqa: F821
+    direct_travel_times: Float[Array, "{self.num_nodes}*{self.num_nodes}"]  # noqa: F821
+    transfer_travel_times: Float[Array, "{self.num_nodes}*{self.num_nodes}"]  # noqa: F821
 
     # Fleet data
     num_vehicles: Int[Array, ""]
@@ -623,6 +626,32 @@ def find_best_transfer_route(
     )
 
     return best_time, transfer_node, first_leg_route, second_leg_route
+
+
+def floyd_warshall(
+    travel_times: Float[Array, "num_nodes num_nodes"],
+) -> Float[Array, "num_nodes num_nodes"]:
+    """Calculate all-pairs shortest paths using Floyd-Warshall algorithm."""
+    n = travel_times.shape[0]
+    dist = travel_times.copy()
+
+    def body_fun(
+        k: Int[Array, ""], dist: Float[Array, "num_nodes num_nodes"]
+    ) -> Float[Array, "num_nodes num_nodes"]:
+        """Update distances using node k as intermediate."""
+        # Get the k-th row and column
+        row_k = dist[k, :]  # Shape: (n,)
+        col_k = dist[:, k]  # Shape: (n,)
+
+        # Calculate new distances through k
+        new_dists = jnp.expand_dims(col_k, 1) + row_k  # Shape: (n, n)
+
+        # Update distances where new path is shorter
+        return jnp.minimum(dist, new_dists)
+
+    dist = jax.lax.fori_loop(0, n, body_fun, dist)
+
+    return dist
 
 
 def assign_passengers(

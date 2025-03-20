@@ -32,6 +32,9 @@ from jumanji.environments.routing.mandl.types import (
     RouteType,
     State,
     assign_passengers,
+    calculate_route_times,
+    find_best_transfer_route,
+    floyd_warshall,
     get_last_stops,
     handle_completed_and_transferring_passengers,
     increment_in_vehicle_times,
@@ -406,6 +409,24 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 minimum=0,
                 maximum=num_routes,
             ),
+            direct_travel_times=specs.BoundedArray(
+                shape=(num_nodes * num_nodes,),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
+            ),
+            transfer_travel_times=specs.BoundedArray(
+                shape=(num_nodes * num_nodes,),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
+            ),
+            network_shortest_times=specs.BoundedArray(
+                shape=(num_nodes * num_nodes,),
+                dtype=float,
+                minimum=0.0,
+                maximum=float("inf"),
+            ),
             # Fleet data spec
             num_vehicles=specs.BoundedArray(
                 shape=(),
@@ -508,6 +529,18 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         waiting_demand = waiting_demand.at[origins, destinations].add(waiting_mask)
         transferring_demand = transferring_demand.at[origins, destinations].add(transferring_mask)
 
+        # Calculate travel times
+        route_times, route_directions = calculate_route_times(state)
+        direct_times = jnp.min(route_times, axis=0)
+        transfer_times = jax.vmap(
+            jax.vmap(
+                lambda o, d: find_best_transfer_route(state, o, d, route_times)[0],
+                in_axes=(None, 0),
+            ),
+            in_axes=(0, None),
+        )(jnp.arange(num_nodes), jnp.arange(num_nodes))
+        network_shortest_times = floyd_warshall(state.network.travel_times)
+
         return Observation(
             # Network data
             num_nodes=jnp.array(num_nodes),
@@ -521,6 +554,9 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             route_frequencies=state.routes.frequencies,
             num_flex_routes=state.routes.num_flex_routes,
             num_fix_routes=state.routes.num_fix_routes,
+            direct_travel_times=direct_times.flatten(),
+            transfer_travel_times=transfer_times.flatten(),
+            network_shortest_times=network_shortest_times.flatten(),
             # Fleet data
             num_vehicles=jnp.array(state.fleet.num_vehicles),
             fleet_positions=state.fleet.current_edges,

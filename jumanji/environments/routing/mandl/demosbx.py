@@ -25,14 +25,9 @@ import torch.nn as nn
 import tyro
 from rich.traceback import install
 from sb3_contrib import MaskablePPO
-
-# from sbx import PPO
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from torch.utils.checkpoint import Optional
-
-from jumanji.environments.routing.mandl import Mandl
-from jumanji.wrappers import JumanjiToGymWrapper
 
 install()
 
@@ -65,6 +60,15 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
                 "travel_times": nn.Sequential(
                     nn.Linear(travel_times_size, 64), nn.LayerNorm(64), nn.ReLU()
                 ),
+                "direct_travel_times": nn.Sequential(
+                    nn.Linear(travel_times_size, 64), nn.LayerNorm(64), nn.ReLU()
+                ),
+                "transfer_travel_times": nn.Sequential(
+                    nn.Linear(travel_times_size, 64), nn.LayerNorm(64), nn.ReLU()
+                ),
+                "network_shortest_times": nn.Sequential(
+                    nn.Linear(travel_times_size, 64), nn.LayerNorm(64), nn.ReLU()
+                ),
                 "route_stops": nn.Sequential(
                     nn.Flatten(), nn.Linear(route_stops_size, 64), nn.LayerNorm(64), nn.ReLU()
                 ),
@@ -84,7 +88,7 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
         )
 
         # Calculate total feature size
-        total_features = (64 * 4) + (32 * 3)  # 4 large (64) + 3 small (32) feature extractors
+        total_features = (64 * 7) + (32 * 3)  # 7 large (64) + 3 small (32) feature extractors
 
         # Scalar features remain the same
         self.scalar_features = [
@@ -126,7 +130,12 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
                 x = observations[key].float()
 
                 # Special handling for infinite values
-                if key == "travel_times":
+                if key in [
+                    "travel_times",
+                    "network_shortest_times",
+                    "direct_travel_times",
+                    "transfer_travel_times",
+                ]:
                     x = th.where(th.isinf(x), th.tensor(self.inf_replacement, device=x.device), x)
                     x = th.clamp(x, 0.0, self.inf_replacement)
                     x = x / self.inf_replacement
@@ -159,6 +168,9 @@ def make_env(
     Creates a function that creates an environment.
     This is needed for SubprocVecEnv to properly handle environment creation in separate processes.
     """
+
+    from jumanji.environments.routing.mandl import Mandl
+    from jumanji.wrappers import JumanjiToGymWrapper
 
     def _init() -> gym.Env:
         env = Mandl(
