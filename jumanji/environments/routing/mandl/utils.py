@@ -279,50 +279,6 @@ def calculate_route_total_time(route: list[int], travel_times: jnp.ndarray) -> F
     return jnp.array(forward_time + backward_time)
 
 
-def map_route_time_to_position(
-    route: list[int], travel_times: jnp.ndarray, target_time: jnp.ndarray
-) -> tuple[tuple[int, int], jnp.ndarray, VehicleDirection]:
-    """Maps a time point to position on route.
-
-    Args:
-        route: List of node indices in the route
-        travel_times: Matrix of travel times between nodes
-        target_time: Time point to map to position
-
-    Returns:
-        tuple of (current_edge, time_on_edge, direction)
-        where current_edge is (from_node, to_node)
-    """
-    route_length = len(route)
-    accumulated_time = jnp.array(0.0)
-
-    # Forward journey
-    for i in range(route_length - 1):
-        edge_time = travel_times[route[i], route[i + 1]]
-        if accumulated_time + edge_time > target_time:
-            return (
-                (route[i], route[i + 1]),
-                target_time - accumulated_time,
-                VehicleDirection.FORWARD,
-            )
-        accumulated_time += edge_time
-
-    # Return journey
-    for i in range(route_length - 1, 0, -1):
-        edge_time = travel_times[route[i], route[i - 1]]
-        if accumulated_time + edge_time > target_time:
-            return (
-                (route[i], route[i - 1]),
-                target_time - accumulated_time,
-                VehicleDirection.BACKWARDS,
-            )
-        accumulated_time += edge_time
-
-    # If we get here, target_time exceeds total route time
-    # Wrap around to start of route
-    return map_route_time_to_position(route, travel_times, target_time % accumulated_time)
-
-
 def create_initial_fleet(
     num_routes: int,
     num_flex_routes: int,
@@ -409,7 +365,7 @@ def assign_routes_to_fleet(
     cumsum_times = jnp.cumsum(edge_times, axis=1)
     route_total_times = jnp.sum(edge_times, axis=1)
 
-    def process_route_with_n_vehicles(
+    def process_fixed_route(
         route_idx: int,
         n_vehicles: int,
         total_time: Float[Array, ""],
@@ -418,7 +374,10 @@ def assign_routes_to_fleet(
     ) -> tuple[Array, ...]:
         """Process a single route with known number of vehicles."""
         # Calculate vehicle positions
-        vehicle_times = jnp.linspace(0.0, total_time, n_vehicles)
+        vehicle_times = jnp.linspace(0.0, total_time * 2, n_vehicles)  # twice for back and forward
+        is_backward = vehicle_times >= total_time
+        vehicle_times = jnp.where(is_backward, vehicle_times - total_time, vehicle_times)
+
         edge_indices = jnp.sum(vehicle_times[:, None] > route_cumsum[None, :], axis=1)
 
         # Get edges for vehicles
@@ -436,6 +395,24 @@ def assign_routes_to_fleet(
 
         return route_ids, current_edges, times_on_edge, directions
 
+    def process_flex_route(
+        route_idx: int,
+        n_vehicles: int,  # Add n_vehicles parameter
+        route_stops_single: Array,
+    ) -> tuple[Array, ...]:
+        """Process a flexible route, initializing all vehicles at the start."""
+        # Get edge for vehicles
+        _from_node = route_stops_single[0]
+        _to_node = route_stops_single[1]
+
+        # Create arrays with proper shapes for n_vehicles
+        route_ids = jnp.full(n_vehicles, route_idx, dtype=jnp.int32)
+        current_edges = jnp.tile(jnp.array([[_from_node, _to_node]]), (n_vehicles, 1))
+        times_on_edge = jnp.zeros(n_vehicles, dtype=jnp.float32)
+        directions = jnp.full(n_vehicles, VehicleDirection.FORWARD, dtype=jnp.int32)
+
+        return route_ids, current_edges, times_on_edge, directions
+
     # Process each route separately and concatenate results
     all_route_ids = []
     all_current_edges = []
@@ -443,13 +420,25 @@ def assign_routes_to_fleet(
     all_directions = []
 
     for i in range(num_routes):
-        route_ids, current_edges, times_on_edge, directions = process_route_with_n_vehicles(
-            i,
-            vehicles_per_route[i],  # Now used in untraced context
-            route_total_times[i],
-            cumsum_times[i],
-            route_stops[i],
+        # Bind values to avoid loop variable capture issues
+        route_idx = i
+        n_vehicles = vehicles_per_route[i]
+        total_time = route_total_times[i]
+        cumsum = cumsum_times[i]
+        stops = route_stops[i]
+
+        route_ids, current_edges, times_on_edge, directions = jax.lax.cond(
+            route_batch.types[i] == RouteType.FIXED,
+            lambda route_idx=route_idx,
+            n_vehicles=n_vehicles,
+            total_time=total_time,
+            cumsum=cumsum,
+            stops=stops: process_fixed_route(route_idx, n_vehicles, total_time, cumsum, stops),
+            lambda route_idx=route_idx, n_vehicles=n_vehicles, stops=stops: process_flex_route(
+                route_idx, n_vehicles, stops
+            ),
         )
+
         all_route_ids.append(route_ids)
         all_current_edges.append(current_edges)
         all_times_on_edge.append(times_on_edge)
