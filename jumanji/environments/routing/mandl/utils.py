@@ -26,6 +26,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import replace
+from functools import partial
 from importlib import resources
 from typing import Literal
 
@@ -45,7 +47,6 @@ from jumanji.environments.routing.mandl.types import (
     RouteBatch,
     RouteType,
     VehicleDirection,
-    is_connected,
 )
 
 
@@ -122,8 +123,9 @@ def load_network_data(network_name: str) -> NetworkData:
 def create_initial_passengers(
     demand_data: pd.DataFrame,
     key: chex.PRNGKey,
+    buffer_time_start: float,
+    buffer_time_end: float,
     runtime: float = 60.0,
-    buffer_time: float = 20.0,  # New parameter for end buffer
     mode: Literal["evenly_spaced", "rush_hour", "uniform_random", "all_at_start"] = "evenly_spaced",
 ) -> Passengers:
     """
@@ -160,17 +162,18 @@ def create_initial_passengers(
     destinations = destinations[shuffle_indices]
 
     # Calculate the available time window for passenger entries
-    available_time = runtime - buffer_time
+    available_time = runtime - buffer_time_end - buffer_time_start
+    start_time = buffer_time_start
 
     if mode == "evenly_spaced":
-        # Spread entries evenly across available time
-        entry_times = jnp.linspace(0.0, available_time, num_passengers)
+        # Spread entries between grace period and available time
+        entry_times = jnp.linspace(start_time, start_time + available_time, num_passengers)
 
     elif mode == "rush_hour":
-        # Adjust rush hour timing to respect buffer
-        morning_center = available_time * 0.3  # Slightly earlier to ensure buffer
+        # Adjust rush hour timing to respect grace period and buffer
+        morning_center = start_time + (available_time * 0.3)
         morning_std = available_time * 0.1
-        evening_center = available_time * 0.7  # Slightly earlier to ensure buffer
+        evening_center = start_time + (available_time * 0.7)
         evening_std = available_time * 0.1
         morning_weight = 0.6
 
@@ -181,19 +184,19 @@ def create_initial_passengers(
         morning_times = jax.random.normal(key2, (num_passengers,)) * morning_std + morning_center
         evening_times = jax.random.normal(key3, (num_passengers,)) * evening_std + evening_center
 
-        # Combine and clip to ensure buffer
+        # Combine and clip to ensure grace period and buffer
         entry_times = jnp.where(is_morning, morning_times, evening_times)
-        entry_times = jnp.clip(entry_times, 0.0, available_time)
+        entry_times = jnp.clip(entry_times, start_time, start_time + available_time)
 
     elif mode == "uniform_random":
-        # Random times within available window
+        # Random times within available window after grace period
         entry_times = jax.random.uniform(
-            key, shape=(num_passengers,), minval=0.0, maxval=available_time
+            key, shape=(num_passengers,), minval=start_time, maxval=start_time + available_time
         )
 
     elif mode == "all_at_start":
-        # All passengers enter at start
-        entry_times = jnp.zeros(num_passengers)
+        # All passengers enter after grace period
+        entry_times = jnp.full(num_passengers, start_time)
 
     else:
         raise ValueError(f"Unknown passenger initialization mode: {mode}")
@@ -321,191 +324,205 @@ def map_route_time_to_position(
 
 
 def create_initial_fleet(
-    route_batch: RouteBatch,
-    vehicles_per_route: list[int],
-    network_data: NetworkData,
-    vehicle_capacity: int = 20,
-    num_vehicles_per_fixed_route: int = 3,
-    key: Optional[PRNGKeyArray] = None,
-) -> Fleet:
-    """Create initial fleet with vehicles distributed along their routes.
+    num_routes: int,
+    num_flex_routes: int,
+    total_vehicles: int,
+    vehicles_per_solution_route: list[int],
+    vehicle_capacity: int,
+) -> tuple[Fleet, tuple[int, ...]]:
+    """Create initial fleet and determine vehicle assignments."""
+    # Create vehicles_per_route array
+    vehicles_per_route = []
 
-    Args:
-        route_batch: Collection of all routes in the system
-        vehicles_per_route: List of vehicles per route from solution (if any)
-        network_data: NetworkData instance containing network information
-        vehicle_capacity: Maximum passengers per vehicle
-        num_vehicles_per_fixed_route: Number of vehicles for fixed routes without solution
-        key: Random key for initialization of random positions
+    # Track remaining vehicles
+    remaining_vehicles = total_vehicles
 
-    Returns:
-        Fleet instance with vehicles assigned to routes
-    """
-    print("\nDEBUG: Creating initial fleet:")
-    print(f"Number of routes: {route_batch.num_routes}")
-    print(f"Number of routes with solution vehicles: {len(vehicles_per_route)}")
-    print(f"Number of fixed routes: {route_batch.num_fix_routes}")
-    print(f"Number of flex routes: {route_batch.num_flex_routes}")
-    print(f"Vehicles per fixed route (non-solution): {num_vehicles_per_fixed_route}")
-    print(f"Vehicle capacity: {vehicle_capacity}")
+    # First, allocate solution routes
+    num_fix_routes = num_routes - num_flex_routes
+    for i in range(len(vehicles_per_solution_route)):
+        vehicles = vehicles_per_solution_route[i]
+        vehicles_per_route.append(vehicles)
+        remaining_vehicles -= vehicles
 
-    route_ids = []
-    current_edges = []
-    times_on_edge = []
-    directions = []
+    # Then, allocate flex routes
+    # If we only have flex routes, distribute remaining vehicles among them
+    if num_fix_routes == 0:
+        vehicles_per_flex = remaining_vehicles // num_flex_routes
+        leftover_vehicles = remaining_vehicles % num_flex_routes
 
-    if key is None:
-        key = jax.random.PRNGKey(0)
+        for i in range(num_flex_routes):
+            vehicles = vehicles_per_flex
+            if i < leftover_vehicles:
+                vehicles += 1
+            vehicles_per_route.append(vehicles)
+    else:
+        # Otherwise, give each flex route 1 vehicle
+        vehicles_per_route.extend([1] * num_flex_routes)
+        remaining_vehicles -= num_flex_routes
 
-    for route_idx in range(route_batch.num_routes):
-        # Extract route stops (excluding -1 padding)
-        route = []
-        for stop in route_batch.stops[route_idx]:
-            if stop == -1:
-                break
-            route.append(int(stop))
+        # Distribute remaining vehicles among remaining fixed routes
+        if num_fix_routes > 0:
+            vehicles_per_remaining = remaining_vehicles // num_fix_routes
+            leftover_vehicles = remaining_vehicles % num_fix_routes
 
-        if len(route) < 2:
-            print("WARNING: Route has fewer than 2 stops!")
-            continue
+            for i in range(num_fix_routes):
+                vehicles = vehicles_per_remaining
+                if i < leftover_vehicles:
+                    vehicles += 1
+                vehicles_per_route.append(vehicles)
 
-        # Determine route type and number of vehicles
-        is_solution_route = route_idx < len(vehicles_per_route)
-        is_flex_route = route_batch.types[route_idx] == RouteType.FLEXIBLE
+    assert (
+        jnp.sum(jnp.array(vehicles_per_route)) == total_vehicles
+    ), f"Vehicle allocation mismatch: {jnp.sum(vehicles_per_route)} != {total_vehicles}"
 
-        # Determine number of vehicles
-        if is_solution_route:
-            num_vehicles = vehicles_per_route[route_idx]
-        elif is_flex_route:
-            num_vehicles = 1
-        else:
-            num_vehicles = num_vehicles_per_fixed_route
-
-        # Verify route edge is valid
-        from_node, to_node = route[0], route[1]
-        if not is_connected(network_data, jnp.array(from_node), jnp.array(to_node)):
-            continue
-
-        # Calculate entire route time if more than one stop
-        if not is_flex_route:
-            total_time = calculate_route_total_time(route, network_data.travel_times)
-
-            # Get all edges in route
-            route_edges = []
-            for i in range(len(route) - 1):
-                curr_from, curr_to = route[i], route[i + 1]
-                if is_connected(network_data, curr_from, curr_to):
-                    route_edges.append((curr_from, curr_to))
-
-        # Place vehicles
-        for vehicle_idx in range(num_vehicles):
-            if is_flex_route:
-                # Place at start of route for flexible routes or two-stop routes
-                edge = (from_node, to_node)
-                time_on_edge = 0.0
-                direction = VehicleDirection.FORWARD
-            else:
-                # Distribute vehicles evenly along fixed routes with >2 stops
-                target_time = (vehicle_idx * total_time) / num_vehicles
-                edge, time_on_edge, direction = map_route_time_to_position(
-                    route, network_data.travel_times, target_time
-                )
-
-            route_ids.append(route_idx)
-            current_edges.append(edge)
-            times_on_edge.append(float(time_on_edge))
-            directions.append(direction)
-
-    # Create fleet from collected data
-    fleet = Fleet(
-        route_ids=jnp.array(route_ids, dtype=jnp.int32),
-        current_edges=jnp.array(current_edges, dtype=jnp.int32),
-        times_on_edge=jnp.array(times_on_edge, dtype=jnp.float32),
-        passengers=jnp.full((len(route_ids), vehicle_capacity), -1, dtype=jnp.int32),
-        directions=jnp.array(directions, dtype=jnp.int32),
+    # Create initial fleet with total vehicles
+    initial_fleet = Fleet(
+        route_ids=jnp.full((total_vehicles,), -1, dtype=jnp.int32),
+        current_edges=jnp.full((total_vehicles, 2), -1, dtype=jnp.int32),
+        times_on_edge=jnp.zeros((total_vehicles,), dtype=jnp.float32),
+        passengers=jnp.full((total_vehicles, vehicle_capacity), -1, dtype=jnp.int32),
+        directions=jnp.zeros((total_vehicles,), dtype=jnp.int32),
     )
 
-    print("\nFinal fleet created:")
-    print(f"Total vehicles: {len(route_ids)}")
-    print(f"Route assignments: {route_ids}")
-    print(f"Initial edges: {current_edges}")
-    print(f"Times on edge: {[f'{t:.1f}' for t in times_on_edge]}")
-    print(f"Directions: {[VehicleDirection(d).name for d in directions]}")
+    return initial_fleet, tuple(vehicles_per_route)
 
-    return fleet
+
+@partial(jax.jit, static_argnums=(3,))
+def assign_routes_to_fleet(
+    fleet: Fleet,
+    route_batch: RouteBatch,
+    network_data: NetworkData,
+    vehicles_per_route: tuple[int, ...],
+    max_route_length: int,
+) -> Fleet:
+    """Assign routes to unassigned fleet using predefined vehicle allocations."""
+    num_routes = len(route_batch.types)
+    route_stops = route_batch.stops
+
+    # Calculate travel times for each edge in each route
+    from_nodes = route_stops[:, :-1]
+    to_nodes = route_stops[:, 1:]
+    valid_edges = (from_nodes != -1) & (to_nodes != -1)
+    edge_times = jnp.where(valid_edges, network_data.travel_times[from_nodes, to_nodes], 0.0)
+
+    # Calculate cumulative times along each route
+    cumsum_times = jnp.cumsum(edge_times, axis=1)
+    route_total_times = jnp.sum(edge_times, axis=1)
+
+    def process_route_with_n_vehicles(
+        route_idx: int,
+        n_vehicles: int,
+        total_time: Float[Array, ""],
+        route_cumsum: Array,
+        route_stops_single: Array,
+    ) -> tuple[Array, ...]:
+        """Process a single route with known number of vehicles."""
+        # Calculate vehicle positions
+        vehicle_times = jnp.linspace(0.0, total_time, n_vehicles)
+        edge_indices = jnp.sum(vehicle_times[:, None] > route_cumsum[None, :], axis=1)
+
+        # Get edges for vehicles
+        from_nodes = route_stops_single[edge_indices]
+        to_nodes = route_stops_single[edge_indices + 1]
+        current_edges = jnp.stack([from_nodes, to_nodes], axis=1)
+
+        # Calculate times on edge
+        prev_cumsum = jnp.where(edge_indices > 0, route_cumsum[edge_indices - 1], 0.0)
+        times_on_edge = vehicle_times - prev_cumsum
+
+        # Create route assignments and directions
+        route_ids = jnp.full(n_vehicles, route_idx, dtype=jnp.int32)
+        directions = jnp.full(n_vehicles, VehicleDirection.FORWARD, dtype=jnp.int32)
+
+        return route_ids, current_edges, times_on_edge, directions
+
+    # Process each route separately and concatenate results
+    all_route_ids = []
+    all_current_edges = []
+    all_times_on_edge = []
+    all_directions = []
+
+    for i in range(num_routes):
+        route_ids, current_edges, times_on_edge, directions = process_route_with_n_vehicles(
+            i,
+            vehicles_per_route[i],  # Now used in untraced context
+            route_total_times[i],
+            cumsum_times[i],
+            route_stops[i],
+        )
+        all_route_ids.append(route_ids)
+        all_current_edges.append(current_edges)
+        all_times_on_edge.append(times_on_edge)
+        all_directions.append(directions)
+
+    # Concatenate all results
+    return replace(
+        fleet,
+        route_ids=jnp.concatenate(all_route_ids),
+        current_edges=jnp.concatenate(all_current_edges),
+        times_on_edge=jnp.concatenate(all_times_on_edge),
+        directions=jnp.concatenate(all_directions),
+    )
 
 
 def create_initial_routes(
     solution_routes: list[list[int]],
-    num_fix_routes: int,
+    num_fix_routes: int,  # Additional fixed routes beyond solution routes
     num_flex_routes: int,
     network_data: NetworkData,
     max_stops: int,
     key: Optional[PRNGKeyArray] = None,
 ) -> RouteBatch:
-    """Create initial routes combining fixed and solution routes."""
+    """Create initial routes combining solution, additional fixed, and flexible routes.
+
+    Args:
+        solution_routes: List of predefined route stop sequences from solution
+        num_fix_routes: Number of additional fixed routes beyond solution routes
+        num_flex_routes: Number of flexible routes to create
+        network_data: Network structure data
+        max_stops: Maximum number of stops per route
+        key: Random key for initialization
+    """
     print("\nDEBUG: Creating initial routes:")
     print(f"Number of solution routes: {len(solution_routes)}")
-    print(f"Number of fixed routes requested: {num_fix_routes}")
+    print(f"Number of additional fixed routes: {num_fix_routes}")
     print(f"Number of flexible routes: {num_flex_routes}")
 
     if key is None:
         key = jax.random.PRNGKey(0)
 
-    total_routes = num_fix_routes + num_flex_routes
+    # Calculate total routes
+    total_fix_routes = len(solution_routes) + num_fix_routes
+    total_routes = total_fix_routes + num_flex_routes
 
     # Find maximum route length
     max_solution_length = max([len(route) for route in solution_routes], default=0)
     max_length = max(max_solution_length, max_stops)
 
-    # Get all valid edges from the network (excluding self-loops)
-    valid_edges = []
-    for i in range(len(network_data.is_terminal)):
-        for j in range(len(network_data.is_terminal)):
-            if i != j and is_connected(
-                network_data, jnp.array(i), jnp.array(j)
-            ):  # Exclude self-loops
-                valid_edges.append((i, j))
-
-    print(f"Found {len(valid_edges)} valid edges in network:")
-    print("Valid edges:", valid_edges)
-
-    if not valid_edges:
-        raise ValueError("No valid edges found in network!")
-
     # Create padded routes array
     padded_routes = []
 
-    # Add fixed routes from solution if available
-    for i in range(num_fix_routes):
-        if i < len(solution_routes):
-            # Use solution route
-            route = solution_routes[i]
-            padded = route + [-1] * (max_length - len(route))
-            print(f"Fixed route {i} (from solution): {route}")
-        else:
-            # Create new fixed route with random valid edge
-            key, subkey = jax.random.split(key)
-            edge_idx = int(jax.random.randint(subkey, (), 0, len(valid_edges)))
-            from_node, to_node = valid_edges[edge_idx]
-            route = [from_node, to_node]
-            padded = route + [-1] * (max_length - len(route))
-            print(f"Fixed route {i} (new): {route}")
+    # Add solution routes
+    for i, route in enumerate(solution_routes):
+        padded = route + [-1] * (max_length - len(route))
+        print(f"Solution route {i}: {route}")
         padded_routes.append(padded)
 
-    # Add flexible routes with random initial edges
+    # Add additional fixed routes (empty initially)
+    for i in range(num_fix_routes):
+        padded = [-1] * max_length
+        print(f"Additional fixed route {i}: empty")
+        padded_routes.append(padded)
+
+    # Add flexible routes (empty initially)
     for i in range(num_flex_routes):
-        key, subkey = jax.random.split(key)
-        edge_idx = int(jax.random.randint(subkey, (), 0, len(valid_edges)))
-        from_node, to_node = valid_edges[edge_idx]
-        route = [from_node, to_node]
-        padded = route + [-1] * (max_length - len(route))
-        print(f"Flexible route {i}: {route}")
+        padded = [-1] * max_length
+        print(f"Flexible route {i}: empty")
         padded_routes.append(padded)
 
     # Create route types array
     route_types = jnp.concatenate(
-        [jnp.full(num_fix_routes, RouteType.FIXED), jnp.full(num_flex_routes, RouteType.FLEXIBLE)]
+        [jnp.full(total_fix_routes, RouteType.FIXED), jnp.full(num_flex_routes, RouteType.FLEXIBLE)]
     )
 
     route_batch = RouteBatch(
@@ -513,11 +530,13 @@ def create_initial_routes(
         stops=jnp.array(padded_routes, dtype=jnp.int32),
         frequencies=jnp.ones(total_routes, dtype=jnp.float32),
         num_flex_routes=jnp.array(num_flex_routes),
-        num_fix_routes=jnp.array(num_fix_routes),
+        num_fix_routes=jnp.array(total_fix_routes),  # Total fixed routes including solution
     )
 
     print("\nDEBUG: Created RouteBatch:")
     print(f"Number of routes: {route_batch.num_routes}")
+    print(f"Number of fixed routes (including solution): {route_batch.num_fix_routes}")
+    print(f"Number of flexible routes: {route_batch.num_flex_routes}")
     print(f"Route types: {route_batch.types}")
     print(f"Stops:\n{route_batch.stops}")
 

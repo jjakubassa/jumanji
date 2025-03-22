@@ -59,7 +59,7 @@ class TestActionMasking:
     def test_empty_route_mask(
         self, env: Mandl, simple_network: NetworkData, empty_routes: RouteBatch
     ) -> None:
-        """Test that all actions are allowed for empty routes."""
+        """Test that all nodes are allowed but no-op is disabled for empty routes"""
         state = State(
             network=simple_network,
             fleet=Fleet(
@@ -86,5 +86,8 @@ class TestActionMasking:
 
         get_action_mask = jax.jit(env.get_action_mask)
         mask = get_action_mask(state)
+
+        # All nodes should be allowed (True) but no-op should be disabled (False)
         expected_mask = jnp.ones((2, 4), dtype=bool)  # 3 nodes + 1 no-op action
+        expected_mask = expected_mask.at[:, -1].set(False)  # Disable no-op action
         assert jnp.array_equal(mask, expected_mask)

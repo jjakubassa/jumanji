@@ -14,7 +14,7 @@
 
 import marimo
 
-__generated_with = "0.11.12"
+__generated_with = "0.11.19"
 app = marimo.App(width="medium")
 
 
@@ -39,7 +39,7 @@ def _(passenger_df, pl):
     return (last_state_passenger_df,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(alt, last_state_passenger_df):
     (
         alt.Chart(last_state_passenger_df)
@@ -76,7 +76,61 @@ def _(alt, last_state_passenger_df, pl):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell
+def _(last_state_passenger_df, pl):
+    _od_counts = last_state_passenger_df.group_by(
+        ["origin", "destination", "status"]
+    ).agg(pl.count("passenger_id").alias("count"))
+
+
+    _od_counts = _od_counts.to_pandas()
+
+    from plotnine import ggplot, geom_tile, facet_grid, scale_fill_gradient, theme_minimal, theme, element_text, labs, aes, geom_text, element_blank, element_rect, scale_x_discrete, scale_y_discrete, scale_color_continuous, scale_fill_cmap
+
+    origins = sorted(_od_counts['origin'].unique())
+    destinations = sorted(_od_counts['destination'].unique())
+
+    _p = (
+        ggplot(_od_counts, aes(x='origin', y='destination', fill='count'))
+        + geom_tile(aes(width=1.00, height=1.00))
+        # + geom_text(aes(label='count'), show_legend=False)
+        + scale_fill_cmap(cmap_name="GnBu", name='Number of Passengers')
+        + scale_x_discrete(limits=origins)
+        + scale_y_discrete(limits=destinations)
+        + theme(
+            panel_background=element_rect(fill="white"),
+            # axis_ticks=element_blank(),
+            panel_grid=element_blank(),  # remove grid lines
+            # panel_border=element_blank(),  # remove border
+            axis_line=element_blank(),    # remove axis lines
+            figure_size=(5.78, 4)
+        )
+    )
+
+    _p.draw()
+    return (
+        aes,
+        destinations,
+        element_blank,
+        element_rect,
+        element_text,
+        facet_grid,
+        geom_text,
+        geom_tile,
+        ggplot,
+        labs,
+        origins,
+        scale_color_continuous,
+        scale_fill_cmap,
+        scale_fill_gradient,
+        scale_x_discrete,
+        scale_y_discrete,
+        theme,
+        theme_minimal,
+    )
+
+
+@app.cell(disabled=True, hide_code=True)
 def _(alt, last_state_passenger_df, mo):
     _chart = (
         alt.Chart(last_state_passenger_df)
@@ -96,7 +150,7 @@ def _(alt, last_state_passenger_df, mo):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(alt, last_state_passenger_df, mo):
     _chart = (
         alt.Chart(last_state_passenger_df)
@@ -117,7 +171,7 @@ def _(alt, last_state_passenger_df, mo):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(alt, last_state_passenger_df, mo):
     # plot time waiting vs time in vehicle using altair
     _chart = (
@@ -140,7 +194,7 @@ def _(alt, last_state_passenger_df, mo):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(alt, last_state_passenger_df, mo, passenger_df, pl):
     # pre-aggregate data
     _od_counts = last_state_passenger_df.group_by(["origin", "destination"]).agg(
@@ -197,7 +251,7 @@ def _(alt, last_state_passenger_df, mo, passenger_df, pl):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(alt, last_state_passenger_df, mo, passenger_df, pl):
     # pre-aggregate data
     _od_counts = last_state_passenger_df.group_by(
@@ -263,19 +317,19 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(fleet_df):
     fleet_df
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(mo):
     mo.md(r"""When was which vehicle full? Are they of the same routes?""")
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(env, fleet_df, pl):
     try:
         _num_passengers_over_time = fleet_df.select(
@@ -294,13 +348,13 @@ def _(env, fleet_df, pl):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(mo):
     mo.md(r"""Which passengers could not be served? The ones with the high waiting times at origin=0?""")
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(alt, env, fleet_df, pl):
     _num_passengers_matrix = (
         fleet_df.select(["time", "num_passengers", "current_from", "current_to"])
@@ -330,19 +384,19 @@ def _(mo):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(mo):
     mo.md(r"""How efficient are the routes compared to shortest path?""")
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(mo):
     mo.md(r"""How efficient is the actual travel time (in vehicle) compared to the shortest path?""")
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(alt, jnp, last_state_passenger_df, mo, np, pl, states):
     # find shortest path for each od pair with floyd warshall algorithm
     def shortest_path_floyd_warshall(
@@ -470,19 +524,19 @@ def _(alt, jnp, last_state_passenger_df, mo, np, pl, states):
     return combined_df, shortest_path_floyd_warshall, shortest_paths
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(passenger_df):
     passenger_df
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(mo):
     mo.md(r"""## Analysis of inefficient journeys""")
     return
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(
     PassengerStatus,
     State,
@@ -750,7 +804,7 @@ def _(
     return (analyze_inefficient_journey,)
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(
     PassengerStatus,
     State,
@@ -960,7 +1014,7 @@ def _(
     return (analyze_stuck_passenger,)
 
 
-@app.cell(hide_code=True)
+@app.cell(disabled=True, hide_code=True)
 def _(
     Array,
     Bool,
@@ -1180,7 +1234,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(Mandl, PassengerStatus, jax, jnp):
     # Create environment
     n_steps = (24 * 60) + 1000
@@ -1275,13 +1329,6 @@ def _(Mandl, PassengerStatus, jax, jnp):
     )
 
 
-@app.cell
-def _(env, final_state, plt):
-    env.render(final_state)
-    plt.show()
-    return
-
-
 @app.cell(hide_code=True)
 def _(state):
     # Print timing statistics
@@ -1304,10 +1351,10 @@ def _(state):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(plt, state):
     # Create figure for histograms
-    plt.figure(figsize=(12, 5))
+    plt.figure(figsize=(5.78, 2.5))
 
     # Plot waiting time distribution
     plt.subplot(1, 2, 1)
@@ -1325,26 +1372,6 @@ def _(plt, state):
 
     plt.tight_layout()
     plt.show()
-    return
-
-
-@app.cell
-def _(env, plt, states):
-    env.animate(states[:10], interval=800, save_path="mandl_simulation.mp4")
-    plt.show()
-    return
-
-
-@app.cell
-def _():
-    # busse einfärben in linien farbe
-
-    # Andere visualisierung:
-    # farbe der busse zeigt auslastung
-    # pfeile zwischen OD zeigt demand
-    # pfeile zwischen OD zeigt total travel time
-    # pfeile zwischen OD zeigt kürzeste route
-    # pfeile zwischen OD zeigt vehältnis von actual total travel time zu optimaler route
     return
 
 
@@ -1650,6 +1677,9 @@ def _():
     )
     from jaxtyping import Int, Float, Bool, Array
     from dataclasses import replace
+
+    import scienceplots
+    plt.style.use(["science", "ieee"])
     return (
         Array,
         Bool,
@@ -1681,16 +1711,12 @@ def _():
         plt,
         replace,
         rgb,
+        scienceplots,
         svgwrite,
         tqdm,
         update_passengers_to_waiting,
         update_routes,
     )
-
-
-@app.cell
-def _():
-    return
 
 
 if __name__ == "__main__":

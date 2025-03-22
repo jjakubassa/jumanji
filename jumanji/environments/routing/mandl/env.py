@@ -45,6 +45,7 @@ from jumanji.environments.routing.mandl.types import (
     update_routes,
 )
 from jumanji.environments.routing.mandl.utils import (
+    assign_routes_to_fleet,
     create_initial_fleet,
     create_initial_passengers,
     create_initial_routes,
@@ -63,14 +64,15 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         viewer: Optional[Viewer] = None,
         network_name: Literal["mandl1", "ceder1"] = "mandl1",
         runtime: float = 150.0,
-        buffer_time: float = 100.0,
+        buffer_time_end: float = 100.0,
+        buffer_time_start: float = 8,
         vehicle_capacity: int = 50,
-        solution_name: Optional[str] = None,  # None means no solution
-        num_fix_routes: int = 0,
+        solution_name: Optional[str] = None,  # None means no solution from file
+        num_fix_routes: int = 1,
         num_flex_routes: int = 16,
         max_route_length: int = 8,
         allow_actions_fixed_routes: bool = True,
-        num_vehicles_per_fixed_route: int = 4,
+        total_vehicles: int = 99,
         passenger_init_mode: Literal[
             "evenly_spaced", "rush_hour", "uniform_random", "all_at_start"
         ] = "evenly_spaced",
@@ -80,9 +82,10 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         self.num_flex_routes: Final = num_flex_routes
         self.passenger_init_mode: Final = passenger_init_mode
         self.vehicle_capacity: Final = vehicle_capacity
-        self.buffer_time: Final = buffer_time
-        self.num_vehicles_per_fixed_route = num_vehicles_per_fixed_route
-        self.allow_actions_fixed_routes = allow_actions_fixed_routes
+        self.buffer_time_start: Final = buffer_time_start
+        self.buffer_time_end: Final = buffer_time_end
+        self.total_vehicles: Final = total_vehicles
+        self.allow_actions_fixed_routes: Final = allow_actions_fixed_routes
         self._viewer = viewer or MandlViewer(
             name="Mandl",
             render_mode="human",
@@ -91,9 +94,8 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         # Load all static data once during initialization
         self._network_data = load_network_data(network_name)
         self._routes: list[list[int]] = []
-        self._vehicles_per_route: list[int] = []
         if solution_name is not None:
-            self._routes, self._vehicles_per_route = load_solution_data(solution_name)
+            self._routes, vehicles_per_solution_route = load_solution_data(solution_name)
             # num_fix_routes now represents additional fixed routes beyond solution
             self.num_fix_routes = len(self._routes) + max(0, num_fix_routes)
             print(f"\nUsing solution with {len(self._routes)} routes")
@@ -102,8 +104,11 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         else:
             # If no solution specified, num_fix_routes is the total number of fixed routes
             self.num_fix_routes = max(0, num_fix_routes)
+            vehicles_per_solution_route = []
             print("\nNo solution used")
             print(f"Creating {self.num_fix_routes} fixed routes")
+
+        self._vehicles_per_route: tuple[int, ...]
 
         # Check if solution routes exceed max_stops
         max_solution_length = max(len(route) for route in self._routes) if self._routes else 0
@@ -125,12 +130,12 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             key=None,  # Pass random key
         )
 
-        self._initial_fleet = create_initial_fleet(
-            self._route_batch,  # Pass route_batch instead of routes
-            self._vehicles_per_route,
-            self._network_data,
-            self.vehicle_capacity,
-            num_vehicles_per_fixed_route=self.num_vehicles_per_fixed_route,
+        self._initial_fleet, self._vehicles_per_route = create_initial_fleet(
+            num_routes=self.num_fix_routes + self.num_flex_routes,
+            num_flex_routes=self.num_flex_routes,
+            total_vehicles=self.total_vehicles,
+            vehicles_per_solution_route=vehicles_per_solution_route,
+            vehicle_capacity=self.vehicle_capacity,
         )
 
         # Load passenger demand data
@@ -144,7 +149,12 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             network=self._network_data,
             fleet=self._initial_fleet,
             passengers=create_initial_passengers(
-                self._demand_data, key, runtime=self.runtime, mode=self.passenger_init_mode
+                self._demand_data,
+                key,
+                runtime=self.runtime,
+                buffer_time_start=self.buffer_time_start,
+                buffer_time_end=self.buffer_time_end,
+                mode=self.passenger_init_mode,
             ),
             routes=self._route_batch,
             current_time=jnp.array(0.0),
@@ -173,42 +183,59 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         new_routes = update_routes(state.routes, state.network.num_nodes, action)
         state = replace(state, routes=new_routes)
 
-        # 2. Move vehicles to new position
+        # 2. Check if grace period is over and fleet needs route assignment
+        is_grace_period_over = state.current_time >= self.buffer_time_start
+        needs_route_assignment = jnp.all(state.fleet.route_ids == -1)
+
+        def assign_routes(state: State) -> State:
+            """Assign routes to unassigned fleet using pre-calculated vehicle allocations."""
+            new_fleet = assign_routes_to_fleet(
+                state.fleet,
+                state.routes,
+                self._network_data,
+                self._vehicles_per_route,  # Use pre-calculated vehicle allocations
+                self.max_route_length,
+            )
+            return replace(state, fleet=new_fleet)
+
+        state = jax.lax.cond(
+            is_grace_period_over & needs_route_assignment,
+            assign_routes,
+            lambda s: s,
+            state,
+        )
+
+        # 3. Move vehicles to new positions
         state = move_vehicles(state)
 
-        # 3. Increase time in vehicle for passengers in vehicles and waiting
+        # 4. Update passenger times
         new_passengers = increment_wait_times(state.passengers)
         new_passengers = increment_in_vehicle_times(new_passengers)
         state = replace(state, passengers=new_passengers)
 
-        # 4. For passengers at their goal or transfer stop: remove passengers from vehicles and
-        # update passengers status
+        # 5. Handle completed and transferring passengers
         state = handle_completed_and_transferring_passengers(state)
 
-        # 5. Switch status to WAITING based on current time
-        new_passengers = update_passengers_to_waiting(
-            state.passengers,
-            state.current_time,
-        )
+        # 6. Update passenger statuses based on current time
+        new_passengers = update_passengers_to_waiting(state.passengers, state.current_time)
         state = replace(state, passengers=new_passengers)
 
-        # 6. Assign waiting passengers to vehicles at stations
+        # 7. Assign waiting passengers to vehicles
         state = assign_passengers(state)
 
-        # 7. Calculate reward based on state transition
-        # Negative reward based on waiting and in-vehicle times
+        # 8. Calculate reward
         reward = -jnp.sum(
             state.passengers.time_waiting + state.passengers.time_in_vehicle, dtype=jnp.float32
         )
 
-        # 8. Check if episode is done
+        # 9. Check if episode is done
         done = self._is_done(state)
 
-        # 9. Increase simulation time
+        # 10. Increase simulation time
         new_time = state.current_time + 1.0
         state = replace(state, current_time=new_time)
 
-        # 10. Create timestep
+        # 11. Create timestep
         obs = self.get_observation(state)
         metrics = self._calculate_metrics(state)
         timestep = jax.lax.cond(
@@ -217,7 +244,6 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             lambda: transition(observation=obs, reward=jnp.array(0.0), extras=metrics),
         )
 
-        # 11. Return updated state and timestep
         return state, timestep
 
     def _calculate_metrics(self, state: State) -> dict:
@@ -584,6 +610,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
 
         For fixed routes, only allow no-op action.
         For flexible routes, allow connected nodes and no-op.
+        No-op is disabled for the first two steps to force creation of at least one edge.
         """
         last_stops = get_last_stops(state.routes)  # Shape: (num_routes,)
         num_nodes = state.network.travel_times.shape[0]
@@ -602,28 +629,36 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         is_not_last_stop = last_stops[:, None] != node_indices[None, :]
         connected_nodes = connected_nodes & is_not_last_stop
 
-        # Always allow the no-op action
-        no_op = jnp.ones((num_routes, 1), dtype=bool)
+        # Check if we're in the first two steps (where last_stops is -1)
+        is_first_two_steps = jnp.sum(state.routes.stops != -1, axis=1) < 2
+
+        # Allow no-op only after first two steps
+        no_op = jnp.ones((num_routes, 1), dtype=bool) & (~is_first_two_steps[:, None])
 
         # Combine connected nodes with no-op
         allowed_actions = jnp.concatenate([connected_nodes, no_op], axis=1)
 
-        # For routes where last_stops == -1, allow all actions
+        # For routes where last_stops == -1, allow all actions except no-op in first two steps
         initial_routes = (last_stops == -1)[:, None]
         all_actions = jnp.ones_like(allowed_actions, dtype=bool)
+        all_actions = all_actions.at[:, -1].set(
+            ~is_first_two_steps
+        )  # Disable no-op for first two steps
 
         if self.allow_actions_fixed_routes:
             is_fixed_route = (state.routes.types == RouteType.FIXED)[:, None]
             fixed_route_mask = jnp.zeros_like(allowed_actions)
-            fixed_route_mask = fixed_route_mask.at[:, -1].set(True)  # Only no-op allowed
+            fixed_route_mask = fixed_route_mask.at[:, -1].set(
+                ~is_first_two_steps
+            )  # Disable no-op for first two steps
 
             # Combine all masks
             action_mask = jnp.where(
                 is_fixed_route,
-                fixed_route_mask,  # Fixed routes: only no-op
+                fixed_route_mask,  # Fixed routes: only no-op after first two steps
                 jnp.where(
                     initial_routes,
-                    all_actions,  # Initial routes: all actions
+                    all_actions,  # Initial routes: all actions except no-op in first two steps
                     allowed_actions,  # Other cases: connected nodes + no-op
                 ),
             )
@@ -631,7 +666,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             # Treat all routes the same way
             action_mask = jnp.where(
                 initial_routes,
-                all_actions,  # Initial routes: all actions
+                all_actions,  # Initial routes: all actions except no-op in first two steps
                 allowed_actions,  # Other cases: connected nodes + no-op
             )
         return action_mask

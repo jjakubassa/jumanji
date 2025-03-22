@@ -22,7 +22,7 @@ import tqdm
 from jumanji.environments.routing.mandl import Mandl
 from jumanji.environments.routing.mandl.types import PassengerStatus, State
 
-plt.style.use(["science", "ieee"])
+# plt.style.use(["science", "ieee"])
 
 
 # %%
@@ -32,13 +32,15 @@ def main() -> State:
 
     # Create environment
     n_steps = 100
-    buffer_steps = 100
+    buffer_steps = 50
     total_steps = n_steps + buffer_steps
     env = Mandl(
-        network_name="mandl1",
+        network_name="ceder1",
+        solution_name="ceder1",
         runtime=n_steps,
-        buffer_time=buffer_steps,
+        buffer_time_end=buffer_steps,
         vehicle_capacity=50,
+        num_fix_routes=0,
         num_flex_routes=0,
         max_route_length=0,
         passenger_init_mode="evenly_spaced",

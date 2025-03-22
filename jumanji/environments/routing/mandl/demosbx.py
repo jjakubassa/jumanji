@@ -23,13 +23,12 @@ import submitit
 import torch as th
 import torch.nn as nn
 import tyro
+import wandb
 from rich.traceback import install
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
 from torch.utils.checkpoint import Optional
-
-import wandb
 from wandb.integration.sb3 import WandbCallback
 
 install()
@@ -163,7 +162,7 @@ def make_env(
     num_flex_routes: int,
     num_fix_routes: int,
     max_route_length: int,
-    num_vehicles_per_fixed_route: int,
+    total_vehicles: int,
     vehicle_capacity: int,
     passenger_init_mode: Literal["evenly_spaced", "rush_hour", "uniform_random", "all_at_start"],
 ) -> Callable[[], gym.Env]:
@@ -180,11 +179,11 @@ def make_env(
             network_name=network_name,
             solution_name=solution_name,
             runtime=runtime,
-            buffer_time=buffer_time,
+            buffer_time_end=buffer_time,
             num_fix_routes=num_fix_routes,
             num_flex_routes=num_flex_routes,
             max_route_length=max_route_length,
-            num_vehicles_per_fixed_route=num_vehicles_per_fixed_route,
+            total_vehicles=total_vehicles,
             vehicle_capacity=vehicle_capacity,
             passenger_init_mode=passenger_init_mode,
         )
@@ -207,7 +206,7 @@ class TrainingConfig:
     num_flex_routes: int = 16
     num_fix_routes: int = 0
     max_route_length: int = 8
-    num_vehicles_per_fixed_route: int = 4
+    total_vehicles: int = 99
     vehicle_capacity: int = 50
     passenger_init_mode: Literal["evenly_spaced", "rush_hour", "uniform_random", "all_at_start"] = (
         "evenly_spaced"
@@ -298,7 +297,7 @@ class Trainer:
                     num_fix_routes=self.config.num_fix_routes,
                     num_flex_routes=self.config.num_flex_routes,
                     max_route_length=self.config.max_route_length,
-                    num_vehicles_per_fixed_route=self.config.num_vehicles_per_fixed_route,
+                    total_vehicles=self.config.total_vehicles,
                     vehicle_capacity=self.config.vehicle_capacity,
                     passenger_init_mode=self.config.passenger_init_mode,
                 )
@@ -350,7 +349,7 @@ class Trainer:
             model.learn(
                 total_timesteps=self.config.total_timesteps,
                 progress_bar=progress_bar,
-                callback=WandbCallback(),
+                callback=WandbCallback() if self.config.wandb_entity else None,
             )
 
             # Save the trained model
