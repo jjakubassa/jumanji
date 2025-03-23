@@ -645,7 +645,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             ~is_first_two_steps
         )  # Disable no-op for first two steps
 
-        if self.allow_actions_fixed_routes:
+        if not self.allow_actions_fixed_routes:
             is_fixed_route = (state.routes.types == RouteType.FIXED)[:, None]
             fixed_route_mask = jnp.zeros_like(allowed_actions)
             fixed_route_mask = fixed_route_mask.at[:, -1].set(
