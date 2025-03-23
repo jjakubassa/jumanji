@@ -64,8 +64,8 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         viewer: Optional[Viewer] = None,
         network_name: Literal["mandl1", "ceder1"] = "mandl1",
         runtime: float = 150.0,
-        buffer_time_end: float = 100.0,
-        buffer_time_start: float = 8,
+        buffer_time_end: float = 50.0,
+        buffer_time_start: Optional[float] = None,
         vehicle_capacity: int = 50,
         solution_name: Optional[str] = None,  # None means no solution from file
         num_fix_routes: int = 1,
@@ -82,7 +82,9 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         self.num_flex_routes: Final = num_flex_routes
         self.passenger_init_mode: Final = passenger_init_mode
         self.vehicle_capacity: Final = vehicle_capacity
-        self.buffer_time_start: Final = buffer_time_start
+        self.buffer_time_start: Final = (
+            buffer_time_start if buffer_time_start is not None else max_route_length
+        )
         self.buffer_time_end: Final = buffer_time_end
         self.total_vehicles: Final = total_vehicles
         self.allow_actions_fixed_routes: Final = allow_actions_fixed_routes
