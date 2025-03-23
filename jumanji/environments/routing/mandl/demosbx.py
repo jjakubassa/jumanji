@@ -252,7 +252,7 @@ class TrainingConfig:
     slurm_comment: str = "PPO training on Mandl environment"
     slurm_gpus_per_node: int = 0
     slurm_cpus_per_task: int = 80
-    slurm_time: int = 60 * 12  # minutes
+    slurm_time: int = 60 * 48  # minutes
 
     # Wandb configuration
     wandb_project: str = "thesis"
