@@ -276,6 +276,8 @@ class Trainer:
 
     def train(self) -> str:
         """Train the agent and return the path to the saved model."""
+        print(self.config)
+
         if self.config.wandb_entity:
             wandb.init(
                 project=self.config.wandb_project,
@@ -397,7 +399,7 @@ def main(config: TrainingConfig) -> None:
         trainer = Trainer(config)
         job = executor.submit(trainer)
 
-        print(f"Submitted job {job.job_id}")
+        print(f"Submitted job {job.job_id} - {config.slurm_job_name}")
         print(f"To check status: squeue -j {job.job_id}")
         print("To cancel: scancel", job.job_id)
     else:
