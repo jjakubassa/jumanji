@@ -213,8 +213,8 @@ class TrainingConfig:
     )
 
     # Training configuration
-    total_timesteps: int = int(1e6)
-    learning_rate: float = 3e-4
+    total_timesteps: int = int(1e9)
+    learning_rate: float = 1e-4
     n_steps: int = 150  # * num_envs
     batch_size: int = 150
 
