@@ -39,8 +39,8 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
         super().__init__(observation_space, features_dim)
 
         # Constants for handling inf values
-        self.inf_replacement = 2000.0
-        self.max_finite_value = 1000.0
+        self.inf_replacement = 200_000.0
+        self.max_finite_value = 100_000.0
 
         # Get dimensions from observation space
         self.num_routes = observation_space.spaces["action_mask"].shape[0]
@@ -346,10 +346,15 @@ class Trainer:
 
             # Train the model
             progress_bar = not self.config.use_slurm
+            wandb_callback = (
+                WandbCallback(model_save_path=tensorboard_log, model_save_freq=10_000_000)
+                if self.config.wandb_entity
+                else None
+            )
             model.learn(
                 total_timesteps=self.config.total_timesteps,
                 progress_bar=progress_bar,
-                callback=WandbCallback() if self.config.wandb_entity else None,
+                callback=wandb_callback,
             )
 
             # Save the trained model
