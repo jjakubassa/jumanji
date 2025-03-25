@@ -142,6 +142,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
 
         # Load passenger demand data
         self._demand_data = load_demand_data(network_name)
+        self._network_shortest_times = floyd_warshall(self._network_data.travel_times)
 
         super().__init__()
 
@@ -165,7 +166,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
 
         timestep = restart(
             observation=self.get_observation(initial_state),
-            extras=self._calculate_metrics(initial_state),
+            extras=self._calculate_metrics(initial_state, self.get_observation(initial_state)),
         )
 
         return initial_state, timestep
@@ -239,7 +240,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
 
         # 11. Create timestep
         obs = self.get_observation(state)
-        metrics = self._calculate_metrics(state)
+        metrics = self._calculate_metrics(state, obs)
         timestep = jax.lax.cond(
             done,
             lambda: termination(observation=obs, reward=reward, extras=metrics),
@@ -248,92 +249,67 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
 
         return state, timestep
 
-    def _calculate_metrics(self, state: State) -> dict:
+    def _calculate_metrics(self, state: State, obs: Observation) -> dict:
         """Calculate summary metrics at the end of an episode."""
         metrics = {}
 
-        # 1. Passenger status counts
-        not_in_system = jnp.sum(state.passengers.statuses == PassengerStatus.NOT_IN_SYSTEM)
-        waiting = jnp.sum(state.passengers.statuses == PassengerStatus.WAITING)
-        in_vehicle = jnp.sum(state.passengers.statuses == PassengerStatus.IN_VEHICLE)
+        # Passenger status counts
         completed = jnp.sum(state.passengers.statuses == PassengerStatus.COMPLETED)
         total_passengers = state.passengers.num_passengers
-
-        metrics["not_in_system_passengers"] = not_in_system
-        metrics["waiting_passengers"] = waiting
-        metrics["in_vehicle_passengers"] = in_vehicle
-        metrics["completed_passengers"] = completed
         metrics["completion_rate"] = completed / jnp.maximum(total_passengers, 1)
 
-        # 2. Waiting time statistics (for all passengers who have entered the system)
-        in_system_mask = state.passengers.statuses != PassengerStatus.NOT_IN_SYSTEM
-        in_system_count = jnp.sum(in_system_mask)
-
-        waiting_times = state.passengers.time_waiting * in_system_mask  # Zeros for not-in-system
+        # Waiting time
+        waiting_times = state.passengers.time_waiting
         metrics["total_waiting_time"] = jnp.sum(waiting_times)
-        metrics["avg_waiting_time"] = jnp.sum(waiting_times) / jnp.maximum(in_system_count, 1)
+        metrics["avg_waiting_time"] = jnp.mean(waiting_times)
         metrics["max_waiting_time"] = jnp.max(waiting_times)
 
-        # 3. In-vehicle time statistics
-        in_vehicle_times = state.passengers.time_in_vehicle * (state.passengers.time_in_vehicle > 0)
-        in_vehicle_count = jnp.sum(state.passengers.time_in_vehicle > 0)
-
+        # In-vehicle time
+        in_vehicle_times = state.passengers.time_in_vehicle
         metrics["total_in_vehicle_time"] = jnp.sum(in_vehicle_times)
-        metrics["avg_in_vehicle_time"] = jnp.sum(in_vehicle_times) / jnp.maximum(
-            in_vehicle_count, 1
-        )
+        metrics["avg_in_vehicle_time"] = jnp.mean(in_vehicle_times)
         metrics["max_in_vehicle_time"] = jnp.max(in_vehicle_times)
 
-        # 4. Transfer statistics
+        # Total travel time (waiting + in-vehicle)
+        metrics["total_travel_time"] = jnp.sum(waiting_times) + jnp.sum(in_vehicle_times)
+        metrics["avg_total_travel_time"] = jnp.mean(waiting_times + in_vehicle_times)
+
+        # Transfer statistics
         transfers = state.passengers.has_transferred
         metrics["total_transfers"] = jnp.sum(transfers)
-        metrics["avg_transfers_per_passenger"] = jnp.sum(transfers) / jnp.maximum(
-            in_system_count, 1
-        )
+        metrics["avg_transfers_per_passenger"] = jnp.mean(transfers)
 
-        # 5. Vehicle utilization
+        # Vehicle utilization
         capacity_per_vehicle = state.fleet.passengers.shape[1]
         vehicle_occupancy = jnp.sum(state.fleet.passengers != -1, axis=1)
         metrics["avg_vehicle_utilization"] = jnp.mean(vehicle_occupancy) / capacity_per_vehicle
         metrics["percent_empty_vehicles"] = jnp.mean(vehicle_occupancy == 0)
         metrics["percent_full_vehicles"] = jnp.mean(vehicle_occupancy == capacity_per_vehicle)
 
-        # 6. Travel distance metrics for completed passengers (using in-vehicle time as proxy)
-        completed_mask = state.passengers.statuses == PassengerStatus.COMPLETED
-        completed_count = jnp.sum(completed_mask)
-
-        completed_distances = state.passengers.time_in_vehicle * completed_mask
-        metrics["max_completed_distance"] = jnp.max(completed_distances)
-        # Use a high value (inf) for min with a mask to avoid getting 0 as minimum
-        min_distance = jnp.min(jnp.where(completed_mask, state.passengers.time_in_vehicle, jnp.inf))
-        # Replace inf with 0 if no completions
-        metrics["min_completed_distance"] = jnp.where(completed_count > 0, min_distance, 0.0)
-        metrics["mean_completed_distance"] = jnp.sum(completed_distances) / jnp.maximum(
-            completed_count, 1
+        # Route optimality
+        shortest_times_flat = self._network_shortest_times
+        is_finite_direct = jnp.isfinite(obs.direct_travel_times)
+        is_finite_transfer = jnp.isfinite(obs.transfer_travel_times)
+        is_finite_shortest = jnp.isfinite(shortest_times_flat)
+        valid_direct = is_finite_direct & is_finite_shortest
+        valid_transfer = is_finite_transfer & is_finite_shortest
+        metrics["ratio_travel_time_direct_to_shortest_path"] = jnp.where(
+            valid_direct.sum() > 0,
+            (obs.direct_travel_times * valid_direct).sum()
+            / (shortest_times_flat * valid_direct).sum(),
+            jnp.inf,
         )
-
-        # 7. Waiting time at transfer stop
-        transfer_mask = state.passengers.has_transferred
-        transfer_count = jnp.sum(transfer_mask)
-
-        transfer_waiting_times = state.passengers.time_waiting * transfer_mask
-        metrics["avg_transfer_waiting_time"] = jnp.sum(transfer_waiting_times) / jnp.maximum(
-            transfer_count, 1
+        metrics["ratio_travel_time_transfers_to_shortest_path"] = jnp.where(
+            valid_transfer.sum() > 0,
+            (obs.transfer_travel_times * valid_transfer).sum()
+            / (shortest_times_flat * valid_transfer).sum(),
+            jnp.inf,
         )
-
-        # 8. Total travel time (waiting + in-vehicle)
-        total_travel_time = jnp.sum(waiting_times) + jnp.sum(in_vehicle_times)
-        metrics["total_travel_time"] = total_travel_time
-
         return metrics
 
     def _get_empty_metrics(self) -> dict:
         """Return empty metrics dictionary with correct structure."""
         return {
-            "not_in_system_passengers": jnp.array(0),
-            "waiting_passengers": jnp.array(0),
-            "in_vehicle_passengers": jnp.array(0),
-            "completed_passengers": jnp.array(0),
             "completion_rate": jnp.array(0.0),
             "total_waiting_time": jnp.array(0.0),
             "avg_waiting_time": jnp.array(0.0),
@@ -341,16 +317,15 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             "total_in_vehicle_time": jnp.array(0.0),
             "avg_in_vehicle_time": jnp.array(0.0),
             "max_in_vehicle_time": jnp.array(0.0),
+            "total_travel_time": jnp.array(0.0),
+            "avg_total_travel_time": jnp.array(0.0),
             "total_transfers": jnp.array(0),
             "avg_transfers_per_passenger": jnp.array(0.0),
             "avg_vehicle_utilization": jnp.array(0.0),
             "percent_empty_vehicles": jnp.array(0.0),
             "percent_full_vehicles": jnp.array(0.0),
-            "max_completed_distance": jnp.array(0.0),
-            "min_completed_distance": jnp.array(0.0),
-            "mean_completed_distance": jnp.array(0.0),
-            "avg_transfer_waiting_time": jnp.array(0.0),
-            "total_travel_time": jnp.array(0.0),
+            "ratio_travel_time_direct_to_shortest_path": jnp.array(0.0),
+            "ratio_travel_time_transfers_to_shortest_path": jnp.array(0.0),
         }
 
     def _is_done(self, state: State) -> Bool[Array, ""]:
@@ -567,7 +542,6 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             ),
             in_axes=(0, None),
         )(jnp.arange(num_nodes), jnp.arange(num_nodes))
-        network_shortest_times = floyd_warshall(state.network.travel_times)
 
         return Observation(
             # Network data
@@ -584,7 +558,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             num_fix_routes=state.routes.num_fix_routes,
             direct_travel_times=direct_times.flatten(),
             transfer_travel_times=transfer_times.flatten(),
-            network_shortest_times=network_shortest_times.flatten(),
+            network_shortest_times=self._network_shortest_times.flatten(),
             # Fleet data
             num_vehicles=jnp.array(state.fleet.num_vehicles),
             fleet_positions=state.fleet.current_edges,

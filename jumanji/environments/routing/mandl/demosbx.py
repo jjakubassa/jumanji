@@ -15,20 +15,23 @@
 import multiprocessing
 import os
 import traceback
-from dataclasses import dataclass
-from typing import Callable, Dict, Literal
+from typing import Callable, Dict
 
 import gymnasium as gym
+import hydra
 import submitit
 import torch as th
 import torch.nn as nn
-import tyro
-import wandb
+from omegaconf import OmegaConf
 from rich.traceback import install
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor, VecNormalize
+from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
+from stable_baselines3.common.vec_env.dummy_vec_env import DummyVecEnv
 from torch.utils.checkpoint import Optional
+
+import wandb
+from jumanji.environments.routing.mandl.config import NetworkName, PassengerMode, TrainingConfig
 from wandb.integration.sb3 import WandbCallback
 
 install()
@@ -155,109 +158,40 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
 
 def make_env(
     rank: int,
-    network_name: Literal["mandl1", "ceder1"],
-    solution_name: Optional[Literal["mandl1", "ceder1"]],
+    network_name: NetworkName,  # Changed type hint
+    solution_name: Optional[NetworkName],  # Changed type hint
     runtime: float,
-    buffer_time: float,
+    buffer_time_end: float,
     num_flex_routes: int,
     num_fix_routes: int,
     max_route_length: int,
     total_vehicles: int,
     vehicle_capacity: int,
-    passenger_init_mode: Literal["evenly_spaced", "rush_hour", "uniform_random", "all_at_start"],
+    passenger_init_mode: PassengerMode,  # Changed type hint
 ) -> Callable[[], gym.Env]:
-    """
-    Creates a function that creates an environment.
-    This is needed for SubprocVecEnv to properly handle environment creation in separate processes.
-    """
+    """Creates a function that creates an environment."""
 
     from jumanji.environments.routing.mandl import Mandl
     from jumanji.wrappers import JumanjiToGymWrapper
 
     def _init() -> gym.Env:
         env = Mandl(
-            network_name=network_name,
-            solution_name=solution_name,
+            network_name=network_name.value,  # Add .value to get string
+            solution_name=solution_name.value if solution_name else None,  # Add .value
             runtime=runtime,
-            buffer_time_end=buffer_time,
+            buffer_time_end=buffer_time_end,
             num_fix_routes=num_fix_routes,
             num_flex_routes=num_flex_routes,
             max_route_length=max_route_length,
             total_vehicles=total_vehicles,
             vehicle_capacity=vehicle_capacity,
-            passenger_init_mode=passenger_init_mode,
+            passenger_init_mode=passenger_init_mode.value,  # Add .value
         )
         env = JumanjiToGymWrapper(env)
         env.render_mode = "rgb_array"
         return env
 
     return _init
-
-
-@dataclass
-class TrainingConfig:
-    """Configuration for training a PPO agent on the Mandl environment."""
-
-    # Environment configuration
-    network_name: Literal["ceder1", "mandl1"] = "ceder1"
-    solution_name: Optional[Literal["ceder1", "mandl1"]] = None
-    runtime: float = 150
-    buffer_time: float = 10
-    num_flex_routes: int = 16
-    num_fix_routes: int = 0
-    max_route_length: int = 8
-    total_vehicles: int = 99
-    vehicle_capacity: int = 50
-    passenger_init_mode: Literal["evenly_spaced", "rush_hour", "uniform_random", "all_at_start"] = (
-        "evenly_spaced"
-    )
-
-    # Training configuration
-    total_timesteps: int = int(1e9)
-    learning_rate: float = 1e-4
-    n_steps: int = 150  # * num_envs
-    batch_size: int = 150
-
-    # Model configuration
-    policy: str = "MlpPolicy"
-    hidden_size: int = 256
-    n_layers: int = 2
-    device: Literal["cpu", "cuda", "auto"] = "auto"
-
-    # Environment parallelism
-    num_envs: int = -1  # If -1, will use CPU count
-
-    # Output configuration
-    output_dir: str = "outputs"
-    model_name: str = "ppo_mandl"
-
-    # Submitit configuration (for SLURM)
-    use_slurm: bool = False
-    slurm_partition: Literal[
-        "dev_single",
-        "single",
-        "dev_multiple",
-        "multiple",
-        "fat",
-        "dev_gpu_4",
-        "gpu_4",
-        "gpu_8",
-        "dev_multiple_i",
-        "multiple_il",
-        "dev_gpu_4_a100",
-        "gpu_4_a100",
-        "gpu_4_h100",
-    ] = "single"
-    slurm_job_name: str = "mandl_ppo"
-    slurm_comment: str = "PPO training on Mandl environment"
-    slurm_gpus_per_node: int = 0
-    slurm_cpus_per_task: int = 80
-    slurm_time: int = 60 * 48  # minutes
-
-    # Wandb configuration
-    wandb_project: str = "thesis"
-    wandb_entity: Optional[str] = None
-    wandb_name: Optional[str] = None
 
 
 class Trainer:
@@ -279,23 +213,28 @@ class Trainer:
         print(self.config)
 
         if self.config.wandb_entity:
+            config_dict = {
+                k.lower(): v.lower() if isinstance(v, str) else v
+                for k, v in OmegaConf.to_container(self.config, resolve=True).items()
+            }
+
             wandb.init(
                 project=self.config.wandb_project,
                 entity=self.config.wandb_entity,
                 name=self.config.wandb_name,
-                config=vars(self.config),
+                config=config_dict,
                 sync_tensorboard=True,
             )
 
         # Create parallel environments
-        vec_env = SubprocVecEnv(
+        vec_env = DummyVecEnv(
             [
                 make_env(
                     i,
                     network_name=self.config.network_name,
                     solution_name=self.config.solution_name,
                     runtime=self.config.runtime,
-                    buffer_time=self.config.buffer_time,
+                    buffer_time_end=self.config.buffer_time_end,
                     num_fix_routes=self.config.num_fix_routes,
                     num_flex_routes=self.config.num_flex_routes,
                     max_route_length=self.config.max_route_length,
@@ -307,7 +246,26 @@ class Trainer:
             ]
         )
 
-        vec_env = VecMonitor(vec_env)
+        metric_to_track = (
+            "completion_rate",
+            "total_waiting_time",
+            "avg_waiting_time",
+            "max_waiting_time",
+            "total_in_vehicle_time",
+            "avg_in_vehicle_time",
+            "max_in_vehicle_time",
+            "total_travel_time",
+            "avg_total_travel_time",
+            "total_transfers",
+            "avg_transfers_per_passenger",
+            "avg_vehicle_utilization",
+            "percent_empty_vehicles",
+            "percent_full_vehicles",
+            "ratio_travel_time_direct_to_shortest_path",
+            "ratio_travel_time_transfers_to_shortest_path",
+        )
+
+        vec_env = VecMonitor(vec_env, info_keywords=metric_to_track)
         vec_env = VecNormalize(
             vec_env,
             norm_obs=False,  # normalize observations
@@ -330,7 +288,7 @@ class Trainer:
         try:
             # Create and train model
             model = MaskablePPO(
-                policy="MultiInputPolicy",
+                policy=self.config.policy,
                 env=vec_env,
                 verbose=1,
                 n_steps=self.config.n_steps,
@@ -374,6 +332,7 @@ class Trainer:
             vec_env.close()
 
 
+@hydra.main(version_base=None, config_name="ceder_fix")
 def main(config: TrainingConfig) -> None:
     """Main function to handle either direct execution or SLURM submission."""
     # Required for multiprocessing on Windows and macOS
@@ -410,5 +369,4 @@ def main(config: TrainingConfig) -> None:
 
 
 if __name__ == "__main__":
-    config = tyro.cli(TrainingConfig)
-    main(config)
+    main()
