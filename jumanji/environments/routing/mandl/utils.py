@@ -317,8 +317,8 @@ def create_initial_fleet(
 
     # Create initial fleet with total vehicles
     initial_fleet = Fleet(
-        route_ids=jnp.full((total_vehicles,), -1, dtype=jnp.int32),
-        current_edges=jnp.full((total_vehicles, 2), -1, dtype=jnp.int32),
+        route_ids=jnp.full((total_vehicles,), 0, dtype=jnp.int32),
+        current_edges=jnp.full((total_vehicles, 2), 0, dtype=jnp.int32),
         times_on_edge=jnp.zeros((total_vehicles,), dtype=jnp.float32),
         passengers=jnp.full((total_vehicles, vehicle_capacity), -1, dtype=jnp.int32),
         directions=jnp.zeros((total_vehicles,), dtype=jnp.int32),
