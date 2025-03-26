@@ -35,6 +35,7 @@ dependencies = [
     "matplotlib==3.7.4",
     "multiprocess>=0.70.17",
     "pillow>=9.0.0",
+    "rl-zoo3>=2.5.0",
     "typing-extensions>=4.0.0",
     "wandb>=0.19.8",
 ]
@@ -43,7 +44,12 @@ dependencies = [
 include = ["jumanji*"]
 
 [tool.setuptools.package-data]
-"jumanji" = ["py.typed"]
+"jumanji" = [
+    "py.typed",
+    "environments/routing/mandl/assets/**/*.txt", # Include all .txt files in assets and subdirectories
+    "environments/routing/mandl/assets/**/*.svg", # Include SVG files
+    "environments/routing/mandl/assets/**/*.png", # Include PNG files
+]
 
 [tool.setuptools.dynamic]
 version = { attr = "jumanji.version.__version__" }
@@ -126,7 +132,7 @@ ignore = [
     "F401",
 ] # Ignore `F401` (import violations) in all `__init__.py` files.
 
-[dependency-groups]
+[project.optional-dependencies]
 train = [
     "dm-haiku>=0.0.13",
     "hydra-core==1.3",
