@@ -349,11 +349,6 @@ def assign_routes_to_fleet(
     cumsum_times = jnp.cumsum(edge_times, axis=1)
     route_total_times = jnp.sum(edge_times, axis=1)
 
-    print("Initial route assignments:")
-    print("route_stops:", route_stops)
-    print("from_nodes:", from_nodes)
-    print("to_nodes:", to_nodes)
-
     def process_fixed_route(
         route_idx: int,
         n_vehicles: int,

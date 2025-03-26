@@ -185,7 +185,6 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             extras=self._calculate_metrics(initial_state, self.get_observation(initial_state)),
         )
 
-        print("DEBUG: Reset fleet positions:", initial_state.fleet.current_edges)
         return initial_state, timestep
 
     def step(self, state: State, action: chex.Array) -> tuple[State, TimeStep]:
