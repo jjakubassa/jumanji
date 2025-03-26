@@ -605,6 +605,8 @@ class JumanjiToGymWrapper(gym.Env, Generic[State, ActionSpec, Observation]):
         self.observation_space = specs.jumanji_specs_to_gym_spaces(self._env.observation_spec)
         self.action_space = specs.jumanji_specs_to_gym_spaces(self._env.action_spec)
         self._action_masks: Optional[Any] = None
+        self.inf_replacement = 200_000.0
+        self.max_finite_value = 100_000.0
 
         def reset(key: chex.PRNGKey) -> Tuple[State, Observation, Optional[Dict]]:
             """Reset function of a Jumanji environment to be jitted."""
@@ -674,7 +676,37 @@ class JumanjiToGymWrapper(gym.Env, Generic[State, ActionSpec, Observation]):
         info = jax.device_get(extras)
 
         self._action_masks = obs["action_mask"]
-        return obs, reward, terminated, truncated, info
+        return self._process_obs(obs), reward, terminated, truncated, info
+
+    def _process_obs(self, obs: dict) -> dict:
+        """Process observations to handle infinite values and normalize while preserving dtypes."""
+        processed = {}
+        for key, value in obs.items():
+            # Get the original dtype from the observation space
+            orig_dtype = self.observation_space.spaces[key].dtype
+
+            if isinstance(value, (int, float, np.number)):
+                processed[key] = np.array([float(value)], dtype=orig_dtype)
+            else:
+                # Handle array values that need normalization
+                if key in [
+                    "travel_times",
+                    "network_shortest_times",
+                    "direct_travel_times",
+                    "transfer_travel_times",
+                ]:
+                    value = np.where(np.isinf(value), self.inf_replacement, value)
+                    value = np.clip(value, 0.0, self.inf_replacement)
+                    value = value / self.inf_replacement
+                elif key in ["future_demand", "waiting_demand", "transferring_demand"]:
+                    value = np.clip(value, 0.0, self.max_finite_value)
+                    if value.max() > 0:
+                        value = value / (value.max() + 1e-8)
+
+                # Keep original dtype
+                processed[key] = value.astype(orig_dtype)
+
+        return processed
 
     def seed(self, seed: int = 0) -> None:
         """Function which sets the seed for the environment's random number generator(s).
