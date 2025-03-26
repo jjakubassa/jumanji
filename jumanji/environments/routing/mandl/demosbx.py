@@ -15,7 +15,7 @@
 import multiprocessing
 import os
 import traceback
-from typing import Callable, Dict
+from typing import Callable
 
 import gymnasium as gym
 import hydra
@@ -48,21 +48,22 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
         self.max_finite_value = 100_000.0
 
         # Get dimensions from observation space
-        self.num_routes = observation_space.spaces["action_mask"].shape[0]
-        self.num_nodes = observation_space.spaces["is_terminal"].shape[0]
-        self.num_vehicles = observation_space.spaces["fleet_positions"].shape[0]
+        self.num_routes = observation_space.spaces["num_routes"].high[0]
+        self.num_nodes = observation_space.spaces["num_nodes"].high[0]
+        self.num_vehicles = observation_space.spaces["num_vehicles"].high[0]
+        self.max_route_length = observation_space.spaces["max_route_length"].high[0]
 
         # Calculate expected input sizes
         action_mask_size = self.num_routes * (self.num_nodes + 1)  # Include no-op action
         travel_times_size = self.num_nodes * self.num_nodes
-        route_stops_size = self.num_routes * observation_space.spaces["route_stops"].shape[1]
+        route_stops_size = self.num_routes * self.max_route_length
         fleet_positions_size = self.num_vehicles * 2
 
         # Define extractors with correct input sizes
         self.extractors = nn.ModuleDict(
             {
                 "action_mask": nn.Sequential(
-                    nn.Flatten(), nn.Linear(action_mask_size, 64), nn.LayerNorm(64), nn.ReLU()
+                    nn.Linear(action_mask_size, 64), nn.LayerNorm(64), nn.ReLU()
                 ),
                 "travel_times": nn.Sequential(
                     nn.Linear(travel_times_size, 64), nn.LayerNorm(64), nn.ReLU()
@@ -77,10 +78,10 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
                     nn.Linear(travel_times_size, 64), nn.LayerNorm(64), nn.ReLU()
                 ),
                 "route_stops": nn.Sequential(
-                    nn.Flatten(), nn.Linear(route_stops_size, 64), nn.LayerNorm(64), nn.ReLU()
+                    nn.Linear(route_stops_size, 64), nn.LayerNorm(64), nn.ReLU()
                 ),
                 "fleet_positions": nn.Sequential(
-                    nn.Flatten(), nn.Linear(fleet_positions_size, 64), nn.LayerNorm(64), nn.ReLU()
+                    nn.Linear(fleet_positions_size, 64), nn.LayerNorm(64), nn.ReLU()
                 ),
                 "route_types": nn.Sequential(
                     nn.Linear(self.num_routes, 32), nn.LayerNorm(32), nn.ReLU()
@@ -97,7 +98,7 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
         # Calculate total feature size
         total_features = (64 * 7) + (32 * 3)  # 7 large (64) + 3 small (32) feature extractors
 
-        # Scalar features remain the same
+        # Scalar features remain the same but are now 1D arrays
         self.scalar_features = [
             "current_time",
             "max_route_length",
@@ -122,12 +123,12 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
             nn.Tanh(),
         )
 
-    def forward(self, observations: Dict[str, th.Tensor]) -> th.Tensor:
+    def forward(self, observations: dict[str, th.Tensor]) -> th.Tensor:
         encoded_tensors = []
 
-        # Handle scalar features first
+        # Handle scalar features first (now 1D arrays)
         scalar_features = th.stack(
-            [observations[key].squeeze(-1).float() for key in self.scalar_features], dim=1
+            [observations[key].squeeze() for key in self.scalar_features], dim=1
         )
         encoded_tensors.append(self.scalar_extractor(scalar_features))
 

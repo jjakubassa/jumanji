@@ -416,12 +416,12 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 shape=(num_routes,),
                 dtype=int,
                 minimum=0,
-                maximum=1,  # RouteType.FIXED or RouteType.FLEXIBLE
+                maximum=1,
             ),
             route_stops=specs.BoundedArray(
-                shape=(num_routes, max_route_length),
+                shape=(num_routes * max_route_length,),  # Flattened
                 dtype=int,
-                minimum=-1,  # -1 for padding
+                minimum=-1,
                 maximum=num_nodes - 1,
             ),
             route_frequencies=specs.BoundedArray(
@@ -468,7 +468,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 maximum=num_vehicles,
             ),
             fleet_positions=specs.BoundedArray(
-                shape=(self._initial_fleet.num_vehicles, 2),
+                shape=(num_vehicles * 2,),  # Flattened
                 dtype=int,
                 minimum=0,
                 maximum=num_nodes - 1,
@@ -500,7 +500,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 maximum=self.runtime,
             ),
             action_mask=specs.BoundedArray(
-                shape=(num_routes, num_nodes + 1),
+                shape=(num_routes * (num_nodes + 1),),  # Flattened
                 dtype=bool,
                 minimum=False,
                 maximum=True,
@@ -582,7 +582,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             num_routes=jnp.array([state.routes.num_routes]),
             max_route_length=jnp.array([self.max_route_length]),
             route_types=state.routes.types,
-            route_stops=state.routes.stops,
+            route_stops=state.routes.stops.flatten(),
             route_frequencies=state.routes.frequencies,
             num_flex_routes=jnp.array([state.routes.num_flex_routes]),
             num_fix_routes=jnp.array([state.routes.num_fix_routes]),
@@ -591,14 +591,14 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             network_shortest_times=self._network_shortest_times.flatten(),
             # Fleet data
             num_vehicles=jnp.array([state.fleet.num_vehicles]),
-            fleet_positions=state.fleet.current_edges,
+            fleet_positions=state.fleet.current_edges.flatten(),
             # Aggregated passenger data
             future_demand=future_demand.flatten(),
             waiting_demand=waiting_demand.flatten(),
             transferring_demand=transferring_demand.flatten(),
             # Environment state
             current_time=jnp.array([state.current_time]),
-            action_mask=self.get_action_mask(state),
+            action_mask=self.get_action_mask(state).flatten(),
         )
 
     def get_last_stops_flex_routes(self, routes: RouteBatch) -> Int[Array, " num_flex_routes"]:
