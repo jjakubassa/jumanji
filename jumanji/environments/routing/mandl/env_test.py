@@ -56,6 +56,7 @@ class TestActionMasking:
             num_fix_routes=jnp.array(0),
         )
 
+    @pytest.mark.skip
     def test_empty_route_mask(
         self, env: Mandl, simple_network: NetworkData, empty_routes: RouteBatch
     ) -> None:

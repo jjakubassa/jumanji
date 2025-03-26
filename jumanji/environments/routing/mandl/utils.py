@@ -284,6 +284,7 @@ def create_initial_fleet(
     num_flex_routes: int,
     total_vehicles: int,
     vehicles_per_solution_route: list[int],
+    vehicles_per_additional_fixed_route: Optional[tuple[int, ...]],
     vehicle_capacity: int,
 ) -> tuple[Fleet, tuple[int, ...]]:
     """Create initial fleet and determine vehicle assignments."""
@@ -294,42 +295,25 @@ def create_initial_fleet(
     remaining_vehicles = total_vehicles
 
     # First, allocate solution routes
-    num_fix_routes = num_routes - num_flex_routes
     for i in range(len(vehicles_per_solution_route)):
         vehicles = vehicles_per_solution_route[i]
         vehicles_per_route.append(vehicles)
         remaining_vehicles -= vehicles
 
-    # Then, allocate flex routes
-    # If we only have flex routes, distribute remaining vehicles among them
-    if num_fix_routes == 0:
-        vehicles_per_flex = remaining_vehicles // num_flex_routes
-        leftover_vehicles = remaining_vehicles % num_flex_routes
-
-        for i in range(num_flex_routes):
-            vehicles = vehicles_per_flex
-            if i < leftover_vehicles:
-                vehicles += 1
+    # Then, allocate additional fixed routes if specified
+    if vehicles_per_additional_fixed_route is not None:
+        for vehicles in vehicles_per_additional_fixed_route:
             vehicles_per_route.append(vehicles)
-    else:
-        # Otherwise, give each flex route 1 vehicle
+            remaining_vehicles -= vehicles
+
+    # Give each flex route 1 vehicle
+    if num_flex_routes:
         vehicles_per_route.extend([1] * num_flex_routes)
         remaining_vehicles -= num_flex_routes
 
-        # Distribute remaining vehicles among remaining fixed routes
-        if num_fix_routes > 0:
-            vehicles_per_remaining = remaining_vehicles // num_fix_routes
-            leftover_vehicles = remaining_vehicles % num_fix_routes
-
-            for i in range(num_fix_routes):
-                vehicles = vehicles_per_remaining
-                if i < leftover_vehicles:
-                    vehicles += 1
-                vehicles_per_route.append(vehicles)
-
     assert (
         jnp.sum(jnp.array(vehicles_per_route)) == total_vehicles
-    ), f"Vehicle allocation mismatch: {jnp.sum(vehicles_per_route)} != {total_vehicles}"
+    ), f"Vehicle allocation mismatch: {jnp.sum(jnp.array(vehicles_per_route))} != {total_vehicles}"
 
     # Create initial fleet with total vehicles
     initial_fleet = Fleet(

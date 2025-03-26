@@ -67,6 +67,7 @@ class TrainingConfig:
     max_route_length: int = 3
     total_vehicles: int = 12
     vehicle_capacity: int = 50
+    vehicles_per_additional_fixed_route: Optional[tuple[int, ...]] = None
     passenger_init_mode: PassengerMode = PassengerMode.EVENLY_SPACED
 
     # Training configuration
@@ -109,6 +110,7 @@ class CederFlexRoutes(TrainingConfig):
     num_flex_routes: int = 12
     num_fix_routes: int = 0
     total_vehicles: int = 12
+    slurm_job_name: str = "ceder1_flex"
 
 
 @dataclass
@@ -117,6 +119,8 @@ class MandlFixRoutes(TrainingConfig):
     num_flex_routes: int = 0
     num_fix_routes: int = 4
     total_vehicles: int = 99
+    vehicles_per_additional_fixed_route: Optional[tuple[int, ...]] = (14, 26, 29, 30)
+    slurm_job_name: str = "mandl1_fix"
 
 
 @dataclass
@@ -125,6 +129,7 @@ class MandlFlexRoutes(TrainingConfig):
     num_flex_routes: int = 99
     num_fix_routes: int = 0
     total_vehicles: int = 99
+    slurm_job_name: str = "mandl1_flex"
 
 
 cs = ConfigStore.instance()

@@ -158,8 +158,8 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
 
 def make_env(
     rank: int,
-    network_name: NetworkName,  # Changed type hint
-    solution_name: Optional[NetworkName],  # Changed type hint
+    network_name: NetworkName,
+    solution_name: Optional[NetworkName],
     runtime: float,
     buffer_time_end: float,
     num_flex_routes: int,
@@ -167,7 +167,8 @@ def make_env(
     max_route_length: int,
     total_vehicles: int,
     vehicle_capacity: int,
-    passenger_init_mode: PassengerMode,  # Changed type hint
+    vehicles_per_additional_fixed_route: Optional[list[int]],
+    passenger_init_mode: PassengerMode,
 ) -> Callable[[], gym.Env]:
     """Creates a function that creates an environment."""
 
@@ -185,6 +186,7 @@ def make_env(
             max_route_length=max_route_length,
             total_vehicles=total_vehicles,
             vehicle_capacity=vehicle_capacity,
+            vehicles_per_additional_fixed_route=vehicles_per_additional_fixed_route,
             passenger_init_mode=passenger_init_mode.value,  # Add .value
         )
         env = JumanjiToGymWrapper(env)
@@ -240,6 +242,7 @@ class Trainer:
                     max_route_length=self.config.max_route_length,
                     total_vehicles=self.config.total_vehicles,
                     vehicle_capacity=self.config.vehicle_capacity,
+                    vehicles_per_additional_fixed_route=self.config.vehicles_per_additional_fixed_route,
                     passenger_init_mode=self.config.passenger_init_mode,
                 )
                 for i in range(self.config.num_envs)

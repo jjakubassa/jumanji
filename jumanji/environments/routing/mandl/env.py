@@ -73,6 +73,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         max_route_length: int = 8,
         allow_actions_fixed_routes: bool = True,
         total_vehicles: int = 99,
+        vehicles_per_additional_fixed_route: Optional[tuple[int, ...]] = None,  # New parameter
         passenger_init_mode: Literal[
             "evenly_spaced", "rush_hour", "uniform_random", "all_at_start"
         ] = "evenly_spaced",
@@ -96,21 +97,34 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         # Load all static data once during initialization
         self._network_data = load_network_data(network_name)
         self._routes: list[list[int]] = []
+
+        # Load solution routes and their vehicle allocations if specified
+        vehicles_per_solution_route: list[int] = []
         if solution_name is not None:
             self._routes, vehicles_per_solution_route = load_solution_data(solution_name)
-            # num_fix_routes now represents additional fixed routes beyond solution
-            self.num_fix_routes = len(self._routes) + max(0, num_fix_routes)
             print(f"\nUsing solution with {len(self._routes)} routes")
             print(f"Adding {num_fix_routes} additional fixed routes")
-            print(f"Total fixed routes: {self.num_fix_routes}")
-        else:
-            # If no solution specified, num_fix_routes is the total number of fixed routes
-            self.num_fix_routes = max(0, num_fix_routes)
-            vehicles_per_solution_route = []
-            print("\nNo solution used")
-            print(f"Creating {self.num_fix_routes} fixed routes")
+            print(f"Total solution vehicles: {sum(vehicles_per_solution_route)}")
 
-        self._vehicles_per_route: tuple[int, ...]
+        self.num_fix_routes = num_fix_routes
+        print(f"Total fixed routes: {self.num_fix_routes + len(self._routes)}")
+
+        # Validate vehicle allocations for additional fixed routes
+        if vehicles_per_additional_fixed_route is not None:
+            if len(vehicles_per_additional_fixed_route) != num_fix_routes:
+                raise ValueError(
+                    f"Expected {num_fix_routes} vehicle counts for additional fixed routes, "
+                    f"got {len(vehicles_per_additional_fixed_route)}"
+                )
+
+            total_fixed_vehicles = sum(vehicles_per_solution_route) + sum(
+                vehicles_per_additional_fixed_route
+            )
+            if total_fixed_vehicles > total_vehicles:
+                raise ValueError(
+                    f"Total vehicles in fixed routes ({total_fixed_vehicles}) "
+                    f"exceeds total vehicles ({total_vehicles})"
+                )
 
         # Check if solution routes exceed max_stops
         max_solution_length = max(len(route) for route in self._routes) if self._routes else 0
@@ -125,24 +139,26 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         # Create static components once
         self._route_batch = create_initial_routes(
             self._routes,
-            num_fix_routes=self.num_fix_routes,
+            num_fix_routes=num_fix_routes,
             num_flex_routes=self.num_flex_routes,
-            network_data=self._network_data,  # Pass network data
+            network_data=self._network_data,
             max_stops=self.max_route_length,
-            key=None,  # Pass random key
+            key=None,
         )
 
+        # Create initial fleet with vehicle allocations
         self._initial_fleet, self._vehicles_per_route = create_initial_fleet(
             num_routes=self.num_fix_routes + self.num_flex_routes,
             num_flex_routes=self.num_flex_routes,
             total_vehicles=self.total_vehicles,
             vehicles_per_solution_route=vehicles_per_solution_route,
+            vehicles_per_additional_fixed_route=vehicles_per_additional_fixed_route,
             vehicle_capacity=self.vehicle_capacity,
         )
 
         # Load passenger demand data
         self._demand_data = load_demand_data(network_name)
-        self._network_shortest_times = floyd_warshall(self._network_data.travel_times)
+        self._network_shortest_times = floyd_warshall(self._network_data.travel_times).flatten()
 
         super().__init__()
 
