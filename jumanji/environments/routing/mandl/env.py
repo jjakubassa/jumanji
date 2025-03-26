@@ -382,7 +382,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             "ObservationSpec",
             # Network data specs
             num_nodes=specs.BoundedArray(
-                shape=(),
+                shape=(1,),
                 dtype=int,
                 minimum=0,
                 maximum=num_nodes,
@@ -401,13 +401,13 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             ),
             # Route data specs
             num_routes=specs.BoundedArray(
-                shape=(),
+                shape=(1,),
                 dtype=int,
                 minimum=0,
                 maximum=num_routes,
             ),
             max_route_length=specs.BoundedArray(
-                shape=(),
+                shape=(1,),
                 dtype=int,
                 minimum=0,
                 maximum=max_route_length,
@@ -431,13 +431,13 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 maximum=float("inf"),
             ),
             num_flex_routes=specs.BoundedArray(
-                shape=(),
+                shape=(1,),
                 dtype=int,
                 minimum=0,
                 maximum=num_routes,
             ),
             num_fix_routes=specs.BoundedArray(
-                shape=(),
+                shape=(1,),
                 dtype=int,
                 minimum=0,
                 maximum=num_routes,
@@ -462,7 +462,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             ),
             # Fleet data spec
             num_vehicles=specs.BoundedArray(
-                shape=(),
+                shape=(1,),
                 dtype=int,
                 minimum=0,
                 maximum=num_vehicles,
@@ -494,7 +494,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             ),
             # Environment state specs
             current_time=specs.BoundedArray(
-                shape=(),
+                shape=(1,),
                 dtype=float,
                 minimum=0.0,
                 maximum=self.runtime,
@@ -575,29 +575,29 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
 
         return Observation(
             # Network data
-            num_nodes=jnp.array(num_nodes),
+            num_nodes=jnp.array([num_nodes]),  # Make 1D
             travel_times=state.network.travel_times.flatten(),
             is_terminal=state.network.is_terminal,
             # Routes data
-            num_routes=state.routes.num_routes,
-            max_route_length=jnp.array(self.max_route_length),
+            num_routes=jnp.array([state.routes.num_routes]),
+            max_route_length=jnp.array([self.max_route_length]),
             route_types=state.routes.types,
             route_stops=state.routes.stops,
             route_frequencies=state.routes.frequencies,
-            num_flex_routes=state.routes.num_flex_routes,
-            num_fix_routes=state.routes.num_fix_routes,
+            num_flex_routes=jnp.array([state.routes.num_flex_routes]),
+            num_fix_routes=jnp.array([state.routes.num_fix_routes]),
             direct_travel_times=direct_times.flatten(),
             transfer_travel_times=transfer_times.flatten(),
             network_shortest_times=self._network_shortest_times.flatten(),
             # Fleet data
-            num_vehicles=jnp.array(state.fleet.num_vehicles),
+            num_vehicles=jnp.array([state.fleet.num_vehicles]),
             fleet_positions=state.fleet.current_edges,
             # Aggregated passenger data
             future_demand=future_demand.flatten(),
             waiting_demand=waiting_demand.flatten(),
             transferring_demand=transferring_demand.flatten(),
             # Environment state
-            current_time=state.current_time,
+            current_time=jnp.array([state.current_time]),
             action_mask=self.get_action_mask(state),
         )
 

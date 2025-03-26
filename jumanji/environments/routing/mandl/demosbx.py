@@ -34,6 +34,8 @@ import wandb
 from jumanji.environments.routing.mandl.config import NetworkName, PassengerMode, TrainingConfig
 from wandb.integration.sb3 import WandbCallback
 
+# import jax
+# jax.config.update("jax_disable_jit", True)
 install()
 
 
@@ -167,7 +169,7 @@ def make_env(
     max_route_length: int,
     total_vehicles: int,
     vehicle_capacity: int,
-    vehicles_per_additional_fixed_route: Optional[list[int]],
+    vehicles_per_additional_fixed_route: Optional[tuple[int, ...]],
     passenger_init_mode: PassengerMode,
 ) -> Callable[[], gym.Env]:
     """Creates a function that creates an environment."""
@@ -177,8 +179,8 @@ def make_env(
 
     def _init() -> gym.Env:
         env = Mandl(
-            network_name=network_name.value,  # Add .value to get string
-            solution_name=solution_name.value if solution_name else None,  # Add .value
+            network_name=network_name.value,
+            solution_name=solution_name.value if solution_name else None,
             runtime=runtime,
             buffer_time_end=buffer_time_end,
             num_fix_routes=num_fix_routes,
@@ -187,7 +189,7 @@ def make_env(
             total_vehicles=total_vehicles,
             vehicle_capacity=vehicle_capacity,
             vehicles_per_additional_fixed_route=vehicles_per_additional_fixed_route,
-            passenger_init_mode=passenger_init_mode.value,  # Add .value
+            passenger_init_mode=passenger_init_mode.value,
         )
         env = JumanjiToGymWrapper(env)
         env.render_mode = "rgb_array"
