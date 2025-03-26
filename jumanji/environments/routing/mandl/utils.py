@@ -317,8 +317,8 @@ def create_initial_fleet(
 
     # Create initial fleet with total vehicles
     initial_fleet = Fleet(
-        route_ids=jnp.full((total_vehicles,), 0, dtype=jnp.int32),
-        current_edges=jnp.full((total_vehicles, 2), 0, dtype=jnp.int32),
+        route_ids=jnp.zeros((total_vehicles,), dtype=jnp.int32),
+        current_edges=jnp.zeros((total_vehicles, 2), dtype=jnp.int32),
         times_on_edge=jnp.zeros((total_vehicles,), dtype=jnp.float32),
         passengers=jnp.full((total_vehicles, vehicle_capacity), -1, dtype=jnp.int32),
         directions=jnp.zeros((total_vehicles,), dtype=jnp.int32),
@@ -348,6 +348,11 @@ def assign_routes_to_fleet(
     # Calculate cumulative times along each route
     cumsum_times = jnp.cumsum(edge_times, axis=1)
     route_total_times = jnp.sum(edge_times, axis=1)
+
+    print("Initial route assignments:")
+    print("route_stops:", route_stops)
+    print("from_nodes:", from_nodes)
+    print("to_nodes:", to_nodes)
 
     def process_fixed_route(
         route_idx: int,

@@ -185,66 +185,80 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             extras=self._calculate_metrics(initial_state, self.get_observation(initial_state)),
         )
 
+        print("DEBUG: Reset fleet positions:", initial_state.fleet.current_edges)
         return initial_state, timestep
 
     def step(self, state: State, action: chex.Array) -> tuple[State, TimeStep]:
         """
         Advance the simulation by one timestep using the provided actions.
-
-        Args:
-            state: Current state of the environment
-            actions: Array of actions for flexible routes.
-
-        Returns:
-            Tuple containing the new State instance and a TimeStep instance.
+        During warmup (before buffer_time_start), only update routes.
         """
         # 1. Update routes according to action
         new_routes = update_routes(state.routes, state.network.num_nodes, action)
         state = replace(state, routes=new_routes)
 
-        # 2. Check if grace period is over and fleet needs route assignment
-        is_grace_period_over = state.current_time >= self.buffer_time_start
-        needs_route_assignment = jnp.all(state.fleet.route_ids == -1)
+        # Check if we're still in warmup period
+        is_warmup = state.current_time < self.buffer_time_start
 
-        def assign_routes(state: State) -> State:
-            """Assign routes to unassigned fleet using pre-calculated vehicle allocations."""
-            new_fleet = assign_routes_to_fleet(
-                state.fleet,
-                state.routes,
-                self._network_data,
-                self._vehicles_per_route,  # Use pre-calculated vehicle allocations
-                self.max_route_length,
+        # During warmup, skip vehicle and passenger updates
+        def normal_step(state: State) -> State:
+            # 2. Check if grace period is over and fleet needs route assignment
+            needs_route_assignment = jnp.all(state.fleet.route_ids == -1)
+            state = jax.lax.cond(
+                needs_route_assignment,
+                lambda s: replace(
+                    s,
+                    fleet=assign_routes_to_fleet(
+                        s.fleet,
+                        s.routes,
+                        self._network_data,
+                        self._vehicles_per_route,
+                        self.max_route_length,
+                    ),
+                ),
+                lambda s: s,
+                state,
             )
-            return replace(state, fleet=new_fleet)
 
+            # 3. Move vehicles
+            state = move_vehicles(state)
+
+            # 4. Update passenger times
+            new_passengers = increment_wait_times(state.passengers)
+            new_passengers = increment_in_vehicle_times(new_passengers)
+            state = replace(state, passengers=new_passengers)
+
+            # 5. Handle completed and transferring passengers
+            state = handle_completed_and_transferring_passengers(state)
+
+            # 6. Update passenger statuses based on current time
+            new_passengers = update_passengers_to_waiting(state.passengers, state.current_time)
+            state = replace(state, passengers=new_passengers)
+
+            # 7. Assign waiting passengers to vehicles
+            state = assign_passengers(state)
+
+            return state
+
+        def warmup_step(state: State) -> State:
+            # During warmup, only update routes and time
+            return state
+
+        # Use warmup or normal step based on current time
         state = jax.lax.cond(
-            is_grace_period_over & needs_route_assignment,
-            assign_routes,
-            lambda s: s,
+            is_warmup,
+            warmup_step,
+            normal_step,
             state,
         )
 
-        # 3. Move vehicles to new positions
-        state = move_vehicles(state)
-
-        # 4. Update passenger times
-        new_passengers = increment_wait_times(state.passengers)
-        new_passengers = increment_in_vehicle_times(new_passengers)
-        state = replace(state, passengers=new_passengers)
-
-        # 5. Handle completed and transferring passengers
-        state = handle_completed_and_transferring_passengers(state)
-
-        # 6. Update passenger statuses based on current time
-        new_passengers = update_passengers_to_waiting(state.passengers, state.current_time)
-        state = replace(state, passengers=new_passengers)
-
-        # 7. Assign waiting passengers to vehicles
-        state = assign_passengers(state)
-
-        # 8. Calculate reward
-        reward = -jnp.sum(
-            state.passengers.time_waiting + state.passengers.time_in_vehicle, dtype=jnp.float32
+        # 8. Calculate reward (zero during warmup)
+        reward = jax.lax.cond(
+            is_warmup,
+            lambda: jnp.array(0.0),
+            lambda: -jnp.sum(
+                state.passengers.time_waiting + state.passengers.time_in_vehicle, dtype=jnp.float32
+            ),
         )
 
         # 9. Check if episode is done
@@ -260,7 +274,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         timestep = jax.lax.cond(
             done,
             lambda: termination(observation=obs, reward=reward, extras=metrics),
-            lambda: transition(observation=obs, reward=jnp.array(0.0), extras=metrics),
+            lambda: transition(observation=obs, reward=reward, extras=metrics),
         )
 
         return state, timestep
