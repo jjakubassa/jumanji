@@ -456,11 +456,6 @@ def create_initial_routes(
         max_stops: Maximum number of stops per route
         key: Random key for initialization
     """
-    print("\nDEBUG: Creating initial routes:")
-    print(f"Number of solution routes: {len(solution_routes)}")
-    print(f"Number of additional fixed routes: {num_fix_routes}")
-    print(f"Number of flexible routes: {num_flex_routes}")
-
     if key is None:
         key = jax.random.PRNGKey(0)
 
@@ -476,21 +471,18 @@ def create_initial_routes(
     padded_routes = []
 
     # Add solution routes
-    for i, route in enumerate(solution_routes):
+    for _, route in enumerate(solution_routes):
         padded = route + [-1] * (max_length - len(route))
-        print(f"Solution route {i}: {route}")
         padded_routes.append(padded)
 
     # Add additional fixed routes (empty initially)
-    for i in range(num_fix_routes):
+    for _ in range(num_fix_routes):
         padded = [-1] * max_length
-        print(f"Additional fixed route {i}: empty")
         padded_routes.append(padded)
 
     # Add flexible routes (empty initially)
-    for i in range(num_flex_routes):
+    for _ in range(num_flex_routes):
         padded = [-1] * max_length
-        print(f"Flexible route {i}: empty")
         padded_routes.append(padded)
 
     # Create route types array
@@ -505,12 +497,4 @@ def create_initial_routes(
         num_flex_routes=jnp.array(num_flex_routes),
         num_fix_routes=jnp.array(total_fix_routes),  # Total fixed routes including solution
     )
-
-    print("\nDEBUG: Created RouteBatch:")
-    print(f"Number of routes: {route_batch.num_routes}")
-    print(f"Number of fixed routes (including solution): {route_batch.num_fix_routes}")
-    print(f"Number of flexible routes: {route_batch.num_flex_routes}")
-    print(f"Route types: {route_batch.types}")
-    print(f"Stops:\n{route_batch.stops}")
-
     return route_batch

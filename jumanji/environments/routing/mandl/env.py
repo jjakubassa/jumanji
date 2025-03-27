@@ -107,7 +107,6 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             print(f"Total solution vehicles: {sum(vehicles_per_solution_route)}")
 
         self.num_fix_routes = num_fix_routes
-        print(f"Total fixed routes: {self.num_fix_routes + len(self._routes)}")
 
         # Validate vehicle allocations for additional fixed routes
         if vehicles_per_additional_fixed_route is not None:
