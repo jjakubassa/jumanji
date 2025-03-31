@@ -12,14 +12,16 @@ vehicles:
 29
 30
 
-[Solution2]
-name: Another solution example
-num_routes: 3
+[yoo2023with8stopsreplace]
+name: Yoo et. al (2023) at most 8 stops per route but one third of vehicles is removed
+num_routes: 4
 routes:
-1-2-3-6-8-10
-5-4-6-8-15
-6-3-2-5-4-12
+1-2-3-6-8-10-13-11
+5-4-6-8-15-9
+6-3-2-5-4-12-11-10
+11-13-14-10-7-15-6-4
 vehicles:
-15
+9
+18
+19
 20
-25

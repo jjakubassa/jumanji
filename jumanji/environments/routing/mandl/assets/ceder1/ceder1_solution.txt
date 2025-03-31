@@ -11,7 +11,7 @@ vehicles:
 4
 
 [Solution2a]
-name: Ceder1 basic solution
+name: Ceder1 basic solution with one quarter removed
 num_routes: 3
 routes:
 1-2
