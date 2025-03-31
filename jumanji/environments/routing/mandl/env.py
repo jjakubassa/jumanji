@@ -101,10 +101,13 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         # Load solution routes and their vehicle allocations if specified
         vehicles_per_solution_route: list[int] = []
         if solution_name is not None:
-            self._routes, vehicles_per_solution_route = load_solution_data(solution_name)
-            print(f"\nUsing solution with {len(self._routes)} routes")
-            print(f"Adding {num_fix_routes} additional fixed routes")
-            print(f"Total solution vehicles: {sum(vehicles_per_solution_route)}")
+            self._routes, vehicles_per_solution_route = load_solution_data(
+                network_name, solution_name
+            )
+            self.num_solution_routes = len(self._routes)
+            print(f"\nUsing solution '{solution_name}' with {self.num_solution_routes} routes")
+        else:
+            self.num_solution_routes = 0
 
         self.num_fix_routes = num_fix_routes
 
@@ -514,9 +517,10 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         - Which node to add as the next stop (0 to num_nodes-1)
         - Or perform no-op (num_nodes)
         """
+        total_routes = self.num_solution_routes + self.num_fix_routes + self.num_flex_routes
         return specs.MultiDiscreteArray(
             num_values=jnp.full(
-                shape=(self.num_flex_routes + self.num_fix_routes,),
+                shape=(total_routes,),
                 fill_value=self._network_data.num_nodes
                 + 1,  # num_nodes + 1 possible actions per route
                 dtype=jnp.int32,
@@ -652,14 +656,19 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         if not self.allow_actions_fixed_routes:
             is_fixed_route = (state.routes.types == RouteType.FIXED)[:, None]
             fixed_route_mask = jnp.zeros_like(allowed_actions)
+
+            # Always allow no-op for solution routes, regardless of steps
+            solution_routes_mask = jnp.any(state.routes.stops != -1, axis=1)[
+                :, None
+            ]  # Check if route has any stops
             fixed_route_mask = fixed_route_mask.at[:, -1].set(
-                ~is_first_two_steps
-            )  # Disable no-op for first two steps
+                True
+            )  # Always allow no-op for fixed routes
 
             # Combine all masks
             action_mask = jnp.where(
-                is_fixed_route,
-                fixed_route_mask,  # Fixed routes: only no-op after first two steps
+                is_fixed_route & solution_routes_mask,  # Solution routes
+                fixed_route_mask,  # Always allow no-op
                 jnp.where(
                     initial_routes,
                     all_actions,  # Initial routes: all actions except no-op in first two steps

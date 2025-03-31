@@ -15,6 +15,7 @@
 import multiprocessing
 import os
 import traceback
+from dataclasses import asdict
 from typing import Callable
 
 import gymnasium as gym
@@ -28,10 +29,9 @@ from sb3_contrib import MaskablePPO
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
 from stable_baselines3.common.vec_env.dummy_vec_env import DummyVecEnv
-from torch.utils.checkpoint import Optional
 
 import wandb
-from jumanji.environments.routing.mandl.config import NetworkName, PassengerMode, TrainingConfig
+from jumanji.environments.routing.mandl.config import TrainingConfig
 from wandb.integration.sb3 import WandbCallback
 
 # import jax
@@ -54,7 +54,7 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
         self.max_route_length = observation_space.spaces["max_route_length"].high[0]
 
         # Calculate expected input sizes
-        action_mask_size = self.num_routes * (self.num_nodes + 1)  # Include no-op action
+        action_mask_size = self.num_routes * (self.num_nodes + 1)
         travel_times_size = self.num_nodes * self.num_nodes
         route_stops_size = self.num_routes * self.max_route_length
         fleet_positions_size = self.num_vehicles * 2
@@ -159,39 +159,24 @@ class MandlFeaturesExtractor(BaseFeaturesExtractor):
         return self.combination_layer(combined)
 
 
-def make_env(
-    rank: int,
-    network_name: NetworkName,
-    solution_name: Optional[NetworkName],
-    runtime: float,
-    buffer_time_end: float,
-    num_flex_routes: int,
-    num_fix_routes: int,
-    max_route_length: int,
-    total_vehicles: int,
-    vehicle_capacity: int,
-    vehicles_per_additional_fixed_route: Optional[tuple[int, ...]],
-    passenger_init_mode: PassengerMode,
-) -> Callable[[], gym.Env]:
-    """Creates a function that creates an environment."""
+def make_env(rank: int, **kwargs: dict) -> Callable[[], gym.Env]:
+    """Creates a function that creates an environment.
 
+    Args:
+        rank: Environment rank for parallel environments
+        **kwargs: Arguments to pass to Mandl environment
+    """
     from jumanji.environments.routing.mandl import Mandl
     from jumanji.wrappers import JumanjiToGymWrapper
 
     def _init() -> gym.Env:
-        env = Mandl(
-            network_name=network_name.value,
-            solution_name=solution_name.value if solution_name else None,
-            runtime=runtime,
-            buffer_time_end=buffer_time_end,
-            num_fix_routes=num_fix_routes,
-            num_flex_routes=num_flex_routes,
-            max_route_length=max_route_length,
-            total_vehicles=total_vehicles,
-            vehicle_capacity=vehicle_capacity,
-            vehicles_per_additional_fixed_route=vehicles_per_additional_fixed_route,
-            passenger_init_mode=passenger_init_mode.value,
-        )
+        # Convert any enum values to their string representation
+        processed_kwargs = {
+            k: v.value if hasattr(v, "value") else v for k, v in kwargs["kwargs"].items()
+        }
+
+        print(processed_kwargs)
+        env = Mandl(**processed_kwargs)
         env = JumanjiToGymWrapper(env)
         env.render_mode = "rgb_array"
         return env
@@ -233,23 +218,7 @@ class Trainer:
 
         # Create parallel environments
         vec_env = DummyVecEnv(
-            [
-                make_env(
-                    i,
-                    network_name=self.config.network_name,
-                    solution_name=self.config.solution_name,
-                    runtime=self.config.runtime,
-                    buffer_time_end=self.config.buffer_time_end,
-                    num_fix_routes=self.config.num_fix_routes,
-                    num_flex_routes=self.config.num_flex_routes,
-                    max_route_length=self.config.max_route_length,
-                    total_vehicles=self.config.total_vehicles,
-                    vehicle_capacity=self.config.vehicle_capacity,
-                    vehicles_per_additional_fixed_route=self.config.vehicles_per_additional_fixed_route,
-                    passenger_init_mode=self.config.passenger_init_mode,
-                )
-                for i in range(self.config.num_envs)
-            ]
+            [make_env(i, kwargs=asdict(self.config.env)) for i in range(self.config.num_envs)]
         )
 
         metric_to_track = (
@@ -289,7 +258,7 @@ class Trainer:
         }
 
         # Create tensorboard log directory
-        tensorboard_log = os.path.join(self.config.output_dir, self.config.network_name)
+        tensorboard_log = os.path.join(self.config.output_dir, self.config.env.network_name)
 
         try:
             # Create and train model

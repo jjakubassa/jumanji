@@ -224,48 +224,79 @@ def create_initial_passengers(
     )
 
 
-def load_solution_data(network_name: str) -> tuple[list[list[int]], list[int]]:
+def load_solution_data(network_name: str, solution_name: str) -> tuple[list[list[int]], list[int]]:
+    """
+    Load solution data from file and return the specified solution.
+
+    Args:
+        network_name: Name of the network (e.g., 'mandl1')
+        solution_name: Name of the solution to load
+
+    Returns:
+        Tuple of (routes, vehicles_per_route)
+    """
     assets_package = f"jumanji.environments.routing.mandl.assets.{network_name}"
     solution_file = f"{network_name}_solution.txt"
 
     with resources.files(assets_package).joinpath(solution_file).open("r") as f:
-        lines = [line.strip() for line in f.readlines()]
+        content = f.read()
 
-    print("\nDEBUG: Solution file contents:")
-    for i, line in enumerate(lines):
-        print(f"Line {i}: {line}")
+    # Split file into solution sections
+    solutions: dict[str, dict[str, list]] = {}
+    current_solution = None
+    current_section = None
+    routes: list[list[int]] = []
+    vehicles: list[int] = []
 
-    # First line is name/description
-    # Second line is number of routes
-    num_routes = int(lines[1])
-    print(f"\nDEBUG: Number of routes specified: {num_routes}")
+    for line in content.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
 
-    # Next num_routes lines are the routes
-    routes = []
-    for i in range(num_routes):
-        # Convert from 1-based to 0-based indexing
-        line = lines[i + 2]
-        route = [int(node) - 1 for node in line.split("-")]
-        routes.append(route)
-        print(f"DEBUG: Loaded route {i}: {route}")
+        # Check for solution header
+        if line.startswith("[") and line.endswith("]"):
+            # Save previous solution if exists
+            if current_solution:
+                solutions[current_solution] = {"routes": routes.copy(), "vehicles": vehicles.copy()}
+            # Start new solution
+            current_solution = line[1:-1]
+            routes = []
+            vehicles = []
+            current_section = None
+            continue
 
-    # Read vehicles per route from the subsequent lines
-    vehicles_per_route = []
-    for i in range(num_routes):
-        vehicles = int(lines[2 + num_routes + i])
-        vehicles_per_route.append(vehicles)
-        print(f"DEBUG: Route {i} vehicles: {vehicles}")
+        # Check for section headers
+        if line.startswith("name:"):
+            continue
+        elif line.startswith("num_routes:"):
+            continue
+        elif line == "routes:":
+            current_section = "routes"
+            continue
+        elif line == "vehicles:":
+            current_section = "vehicles"
+            continue
 
-    if not routes:
-        raise ValueError("No routes found in solution file")
+        # Process data based on current section
+        if current_section == "routes":
+            # Convert from 1-based to 0-based indexing
+            route = [int(node) - 1 for node in line.split("-")]
+            routes.append(route)
+        elif current_section == "vehicles":
+            vehicles.append(int(line))
 
-    print("\nDEBUG: Final loaded data:")
-    print(f"Number of routes loaded: {len(routes)}")
-    print(f"Number of vehicle assignments: {len(vehicles_per_route)}")
-    for i, (route, vehicles) in enumerate(zip(routes, vehicles_per_route, strict=False)):
-        print(f"Route {i}: {route} with {vehicles} vehicles")
+    # Save last solution
+    if current_solution:
+        solutions[current_solution] = {"routes": routes, "vehicles": vehicles}
 
-    return routes, vehicles_per_route
+    # Check if requested solution exists
+    if solution_name not in solutions:
+        raise ValueError(
+            f"Solution '{solution_name}' not found. Available solutions: {list(solutions.keys())}"
+        )
+
+    solution = solutions[solution_name]
+    return solution["routes"], solution["vehicles"]
 
 
 def calculate_route_total_time(route: list[int], travel_times: jnp.ndarray) -> Float[Array, ""]:
@@ -290,13 +321,10 @@ def create_initial_fleet(
     """Create initial fleet and determine vehicle assignments."""
     # Create vehicles_per_route array
     vehicles_per_route = []
-
-    # Track remaining vehicles
     remaining_vehicles = total_vehicles
 
-    # First, allocate solution routes
-    for i in range(len(vehicles_per_solution_route)):
-        vehicles = vehicles_per_solution_route[i]
+    # First, allocate solution routes if any
+    for vehicles in vehicles_per_solution_route:
         vehicles_per_route.append(vehicles)
         remaining_vehicles -= vehicles
 
@@ -305,19 +333,35 @@ def create_initial_fleet(
         for vehicles in vehicles_per_additional_fixed_route:
             vehicles_per_route.append(vehicles)
             remaining_vehicles -= vehicles
+    else:
+        # If no specific allocation for fixed routes, allocate evenly from remaining vehicles
+        num_fixed_routes = num_routes - num_flex_routes - len(vehicles_per_solution_route)
+        if num_fixed_routes > 0:
+            vehicles_per_fixed = remaining_vehicles // (num_fixed_routes + num_flex_routes)
+            for _ in range(num_fixed_routes):
+                vehicles_per_route.append(vehicles_per_fixed)
+                remaining_vehicles -= vehicles_per_fixed
 
-    # Give each flex route 1 vehicle
-    if num_flex_routes:
-        vehicles_per_route.extend([1] * num_flex_routes)
-        remaining_vehicles -= num_flex_routes
+    # Allocate remaining vehicles evenly among flex routes
+    if num_flex_routes > 0:
+        vehicles_per_flex = remaining_vehicles // num_flex_routes
+        for _ in range(num_flex_routes):
+            vehicles_per_route.append(vehicles_per_flex)
+            remaining_vehicles -= vehicles_per_flex
 
-    assert (
-        jnp.sum(jnp.array(vehicles_per_route)) == total_vehicles
-    ), f"Vehicle allocation mismatch: {jnp.sum(jnp.array(vehicles_per_route))} != {total_vehicles}"
+        # Add any remaining vehicles to the last flex route
+        if remaining_vehicles > 0:
+            vehicles_per_route[-1] += remaining_vehicles
+
+    total_allocated = sum(vehicles_per_route)
+    assert total_allocated == total_vehicles, (
+        f"Vehicle allocation mismatch: {total_allocated} != {total_vehicles}\n"
+        f"Allocation: {vehicles_per_route}"
+    )
 
     # Create initial fleet with total vehicles
     initial_fleet = Fleet(
-        route_ids=jnp.zeros((total_vehicles,), dtype=jnp.int32),
+        route_ids=jnp.full((total_vehicles,), -1, dtype=jnp.int32),  # Initialize with -1
         current_edges=jnp.zeros((total_vehicles, 2), dtype=jnp.int32),
         times_on_edge=jnp.zeros((total_vehicles,), dtype=jnp.float32),
         passengers=jnp.full((total_vehicles, vehicle_capacity), -1, dtype=jnp.int32),

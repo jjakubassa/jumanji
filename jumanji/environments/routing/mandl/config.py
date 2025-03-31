@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
@@ -54,12 +54,9 @@ class SlurmPartition(str, Enum):
 
 
 @dataclass
-class TrainingConfig:
-    """Configuration for training a PPO agent on the Mandl environment."""
-
-    # Environment configuration
+class EnvConfig:
     network_name: NetworkName = NetworkName.CEDER1
-    solution_name: Optional[NetworkName] = None
+    solution_name: Optional[str] = None
     runtime: float = 150
     buffer_time_end: float = 10
     num_flex_routes: int = 0
@@ -67,8 +64,17 @@ class TrainingConfig:
     max_route_length: int = 3
     total_vehicles: int = 12
     vehicle_capacity: int = 50
+    allow_actions_fixed_routes: bool = True
     vehicles_per_additional_fixed_route: Optional[tuple[int, ...]] = None
     passenger_init_mode: PassengerMode = PassengerMode.EVENLY_SPACED
+
+
+@dataclass
+class TrainingConfig:
+    """Configuration for training a PPO agent on the Mandl environment."""
+
+    # Environment configuration
+    env: EnvConfig = field(default_factory=EnvConfig)
 
     # Training configuration
     total_timesteps: int = int(1e6)
