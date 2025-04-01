@@ -567,13 +567,18 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         # Calculate travel times
         route_times, route_directions = calculate_route_times(state)
         direct_times = jnp.min(route_times, axis=0)
-        transfer_times = jax.vmap(
-            jax.vmap(
-                lambda o, d: find_best_transfer_route(state, o, d, route_times)[0],
-                in_axes=(None, 0),
-            ),
-            in_axes=(0, None),
-        )(jnp.arange(num_nodes), jnp.arange(num_nodes))
+
+        transfer_times = jax.lax.cond(
+            state.routes.num_flex_routes == state.routes.num_routes,
+            lambda: jnp.full((num_nodes, num_nodes), jnp.inf),
+            lambda: jax.vmap(
+                jax.vmap(
+                    lambda o, d: find_best_transfer_route(state, o, d, route_times)[0],
+                    in_axes=(None, 0),
+                ),
+                in_axes=(0, None),
+            )(jnp.arange(num_nodes), jnp.arange(num_nodes)),
+        )
 
         return Observation(
             # Network data
@@ -658,9 +663,9 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             fixed_route_mask = jnp.zeros_like(allowed_actions)
 
             # Always allow no-op for solution routes, regardless of steps
-            solution_routes_mask = jnp.any(state.routes.stops != -1, axis=1)[
-                :, None
-            ]  # Check if route has any stops
+            solution_routes_mask = (
+                2 <= jnp.sum(state.routes.stops != -1, axis=1)[:, None]
+            )  # Check if route has any stops
             fixed_route_mask = fixed_route_mask.at[:, -1].set(
                 True
             )  # Always allow no-op for fixed routes

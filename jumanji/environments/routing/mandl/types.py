@@ -688,9 +688,12 @@ def assign_passengers(
         in_vehicle_times = route_times[:, effective_origin, dest]
         has_direct_route = jnp.any(jnp.isfinite(in_vehicle_times))
 
+        # Skip transfers if only flex routes
+        only_flex_routes = jnp.all(state.routes.types == RouteType.FLEXIBLE)
+
         # If no direct route, find best transfer
         _, transfer_node, _, _ = jax.lax.cond(
-            has_direct_route,
+            has_direct_route | only_flex_routes,
             lambda: (jnp.inf, jnp.array(-1), jnp.array(-1), jnp.array(-1)),
             lambda: find_best_transfer_route(state, effective_origin, dest, route_times),
         )
