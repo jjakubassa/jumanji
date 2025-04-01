@@ -15,7 +15,6 @@
 import multiprocessing
 import os
 import traceback
-from dataclasses import asdict
 from typing import Callable
 
 import gymnasium as gym
@@ -217,9 +216,9 @@ class Trainer:
             )
 
         # Create parallel environments
-        vec_env = DummyVecEnv(
-            [make_env(i, kwargs=asdict(self.config.env)) for i in range(self.config.num_envs)]
-        )
+        kwargs = OmegaConf.to_container(self.config.env, resolve=True)
+        assert isinstance(kwargs, dict)
+        vec_env = DummyVecEnv([make_env(i, kwargs=kwargs) for i in range(self.config.num_envs)])
 
         metric_to_track = (
             "completion_rate",
