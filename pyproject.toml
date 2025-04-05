@@ -9,7 +9,7 @@ dynamic = ["version"]
 license = { file = "LICENSE" }
 description = "A diverse suite of scalable reinforcement learning environments in JAX"
 readme = "README.md"
-requires-python = "3.12>=3.10"
+requires-python = ">=3.10, <3.13"
 keywords = ["reinforcement-learning", "python", "jax"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
