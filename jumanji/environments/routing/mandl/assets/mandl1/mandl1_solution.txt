@@ -25,3 +25,60 @@ vehicles:
 18
 19
 20
+
+[jha2019]
+name: A multi-objective meta-heuristic approach for transit network design and frequency setting problem in a bus transit systemx
+num_routes: 12
+routes:
+3-2-5-4-6-8-10-14
+9-15-6-8-10-11-12
+1-2-3-6-8-10-11-13
+9-15-7-10-14-13-11-12
+2-5-4-6-8-10-13-11
+1-2-5-4-6-8-15-7
+11-10-7-15-6-3-2-1
+1-2-4-12-11-10
+7-10-11-12-4-5
+6-3-2-4-12-11-10
+10-7-15-8-6-4-2-3
+1-2-3-6-8-15-9
+vehicles:
+1
+1
+1
+2
+6
+7
+2
+1
+3
+3
+11
+28
+16
+
+[arbex2015]
+name: Efficient transit network design and frequencies setting multi-objective optimization by alternating objective genetic algorithm
+num_routes: 12
+routes:
+1-2-3-6-8-10-11-13
+9-15-7-10-11-12
+7-15-8-6-3-2-4-5 4
+2-4-6-8-10-11-13-14
+13-14-10-8-6-3-2-4
+1-2-5-4-12
+11-10-7-15-6-3-2-1
+5-4-6-8-10-11
+13-11-12-4-5-2-1
+9-15-8-6-3-2-4-12
+vehicles:
+12
+9
+4
+9
+8
+3
+13
+9
+5
+4
