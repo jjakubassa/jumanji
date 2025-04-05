@@ -38,6 +38,7 @@ dependencies = [
     "pandas-stubs>=2.2.3.250308",
     "pillow>=9.0.0",
     "rl-zoo3>=2.5.0",
+    "tensorflow>=2.19.0",
     "typing-extensions>=4.0.0",
     "vegafusion>=2.0.2",
     "vl-convert-python>=1.6.0",
@@ -143,7 +144,7 @@ train = [
     "neptune-client==0.16.15",
     "optax>=0.1.4",
     "rlax>=0.1.4",
-    "tensorboardX==2.5.1",
+    "tensorboardX",
     "tqdm>=4.64.1",
 ]
 dev = [
