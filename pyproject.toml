@@ -9,7 +9,7 @@ dynamic = ["version"]
 license = { file = "LICENSE" }
 description = "A diverse suite of scalable reinforcement learning environments in JAX"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = "3.12>=3.10"
 keywords = ["reinforcement-learning", "python", "jax"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -32,12 +32,15 @@ dependencies = [
     "gymnasium>=1.0",
     "huggingface-hub",
     "jax>=0.5.2",
+    "marimo>=0.12.4",
     "matplotlib==3.7.4",
     "multiprocess>=0.70.17",
     "pandas-stubs>=2.2.3.250308",
     "pillow>=9.0.0",
     "rl-zoo3>=2.5.0",
     "typing-extensions>=4.0.0",
+    "vegafusion>=2.0.2",
+    "vl-convert-python>=1.6.0",
     "wandb>=0.19.8",
 ]
 
