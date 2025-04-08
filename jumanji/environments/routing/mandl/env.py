@@ -32,7 +32,7 @@ from jumanji.environments.routing.mandl.types import (
     RouteType,
     State,
     assign_passengers,
-    calculate_route_times,
+    calculate_invehicle_times,
     find_best_transfer_route,
     floyd_warshall,
     get_last_stops,
@@ -62,7 +62,9 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
     def __init__(
         self,
         viewer: Optional[Viewer] = None,
-        network_name: Literal["mandl1", "ceder1"] = "mandl1",
+        network_name: Literal[
+            "mandl1", "ceder1", "mumford0", "mumford1", "mumford2", "mumford3"
+        ] = "mandl1",
         runtime: float = 150.0,
         buffer_time_end: float = 50.0,
         buffer_time_start: Optional[float] = None,
@@ -277,7 +279,6 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             lambda: termination(observation=obs, reward=reward, extras=metrics),
             lambda: transition(observation=obs, reward=reward, extras=metrics),
         )
-
         return state, timestep
 
     def _calculate_metrics(self, state: State, obs: Observation) -> dict:
@@ -565,15 +566,15 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         transferring_demand = transferring_demand.at[origins, destinations].add(transferring_mask)
 
         # Calculate travel times
-        route_times, route_directions = calculate_route_times(state)
-        direct_times = jnp.min(route_times, axis=0)
+        travel_times_per_vehicle = calculate_invehicle_times(state)
+        direct_times = jnp.min(travel_times_per_vehicle, axis=0)
 
         transfer_times = jax.lax.cond(
             state.routes.num_flex_routes == state.routes.num_routes,
             lambda: jnp.full((num_nodes, num_nodes), jnp.inf),
             lambda: jax.vmap(
                 jax.vmap(
-                    lambda o, d: find_best_transfer_route(state, o, d, route_times)[0],
+                    lambda o, d: find_best_transfer_route(state, o, d, travel_times_per_vehicle)[0],
                     in_axes=(None, 0),
                 ),
                 in_axes=(0, None),

@@ -362,7 +362,7 @@ def create_initial_fleet(
     # Create initial fleet with total vehicles
     initial_fleet = Fleet(
         route_ids=jnp.full((total_vehicles,), -1, dtype=jnp.int32),  # Initialize with -1
-        current_edges=jnp.zeros((total_vehicles, 2), dtype=jnp.int32),
+        current_edges=jnp.zeros((total_vehicles), dtype=jnp.int32),
         times_on_edge=jnp.zeros((total_vehicles,), dtype=jnp.float32),
         passengers=jnp.full((total_vehicles, vehicle_capacity), -1, dtype=jnp.int32),
         directions=jnp.zeros((total_vehicles,), dtype=jnp.int32),
@@ -401,25 +401,25 @@ def assign_routes_to_fleet(
         route_stops_single: Array,
     ) -> tuple[Array, ...]:
         """Process a single route with known number of vehicles."""
+
         # Calculate vehicle positions
         vehicle_times = jnp.linspace(0.0, total_time * 2, n_vehicles)  # twice for back and forward
         is_backward = vehicle_times >= total_time
         vehicle_times = jnp.where(is_backward, vehicle_times - total_time, vehicle_times)
 
-        edge_indices = jnp.sum(vehicle_times[:, None] > route_cumsum[None, :], axis=1)
-
-        # Get edges for vehicles
-        from_nodes = route_stops_single[edge_indices]
-        to_nodes = route_stops_single[edge_indices + 1]
-        current_edges = jnp.stack([from_nodes, to_nodes], axis=1)
+        current_edges = jnp.sum(vehicle_times[:, None] > route_cumsum[None, :], axis=1)
 
         # Calculate times on edge
-        prev_cumsum = jnp.where(edge_indices > 0, route_cumsum[edge_indices - 1], 0.0)
+        prev_cumsum = jnp.where(current_edges > 0, route_cumsum[current_edges - 1], 0.0)
         times_on_edge = vehicle_times - prev_cumsum
 
         # Create route assignments and directions
         route_ids = jnp.full(n_vehicles, route_idx, dtype=jnp.int32)
-        directions = jnp.full(n_vehicles, VehicleDirection.FORWARD, dtype=jnp.int32)
+        directions = jnp.where(
+            is_backward,
+            jnp.full(n_vehicles, VehicleDirection.BACKWARDS, dtype=jnp.int32),
+            jnp.full(n_vehicles, VehicleDirection.FORWARD, dtype=jnp.int32),
+        )
 
         return route_ids, current_edges, times_on_edge, directions
 
@@ -435,7 +435,7 @@ def assign_routes_to_fleet(
 
         # Create arrays with proper shapes for n_vehicles
         route_ids = jnp.full(n_vehicles, route_idx, dtype=jnp.int32)
-        current_edges = jnp.tile(jnp.array([[_from_node, _to_node]]), (n_vehicles, 1))
+        current_edges = jnp.zeros(n_vehicles, dtype=jnp.int32)
         times_on_edge = jnp.zeros(n_vehicles, dtype=jnp.float32)
         directions = jnp.full(n_vehicles, VehicleDirection.FORWARD, dtype=jnp.int32)
 

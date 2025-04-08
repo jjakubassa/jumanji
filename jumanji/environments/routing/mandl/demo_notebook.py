@@ -14,7 +14,7 @@
 
 import marimo
 
-__generated_with = "0.11.19"
+__generated_with = "0.12.4"
 app = marimo.App(width="medium")
 
 
@@ -39,7 +39,7 @@ def _(passenger_df, pl):
     return (last_state_passenger_df,)
 
 
-@app.cell(disabled=True)
+@app.cell
 def _(alt, last_state_passenger_df):
     (
         alt.Chart(last_state_passenger_df)
@@ -66,7 +66,7 @@ def _(alt, last_state_passenger_df, pl):
         .encode(
             x="origin:N",
             y="destination:N",
-            row="status:N",
+            column="status:N",
             color=alt.Color("count")
             .scale(scheme="greenblue")
             .title("Number of Passengers"),
@@ -85,16 +85,33 @@ def _(last_state_passenger_df, pl):
 
     _od_counts = _od_counts.to_pandas()
 
-    from plotnine import ggplot, geom_tile, facet_grid, scale_fill_gradient, theme_minimal, theme, element_text, labs, aes, geom_text, element_blank, element_rect, scale_x_discrete, scale_y_discrete, scale_color_continuous, scale_fill_cmap
+    from plotnine import (
+        ggplot,
+        geom_tile,
+        facet_grid,
+        scale_fill_gradient,
+        theme_minimal,
+        theme,
+        element_text,
+        labs,
+        aes,
+        geom_text,
+        element_blank,
+        element_rect,
+        scale_x_discrete,
+        scale_y_discrete,
+        scale_color_continuous,
+        scale_fill_cmap,
+    )
 
-    origins = sorted(_od_counts['origin'].unique())
-    destinations = sorted(_od_counts['destination'].unique())
+    origins = sorted(_od_counts["origin"].unique())
+    destinations = sorted(_od_counts["destination"].unique())
 
     _p = (
-        ggplot(_od_counts, aes(x='origin', y='destination', fill='count'))
+        ggplot(_od_counts, aes(x="origin", y="destination", fill="count"))
         + geom_tile(aes(width=1.00, height=1.00))
         # + geom_text(aes(label='count'), show_legend=False)
-        + scale_fill_cmap(cmap_name="GnBu", name='Number of Passengers')
+        + scale_fill_cmap(cmap_name="GnBu", name="Number of Passengers")
         + scale_x_discrete(limits=origins)
         + scale_y_discrete(limits=destinations)
         + theme(
@@ -102,8 +119,8 @@ def _(last_state_passenger_df, pl):
             # axis_ticks=element_blank(),
             panel_grid=element_blank(),  # remove grid lines
             # panel_border=element_blank(),  # remove border
-            axis_line=element_blank(),    # remove axis lines
-            figure_size=(5.78, 4)
+            axis_line=element_blank(),  # remove axis lines
+            figure_size=(5.78, 4),
         )
     )
 
@@ -130,7 +147,7 @@ def _(last_state_passenger_df, pl):
     )
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(alt, last_state_passenger_df, mo):
     _chart = (
         alt.Chart(last_state_passenger_df)
@@ -150,7 +167,7 @@ def _(alt, last_state_passenger_df, mo):
     return
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(alt, last_state_passenger_df, mo):
     _chart = (
         alt.Chart(last_state_passenger_df)
@@ -171,7 +188,7 @@ def _(alt, last_state_passenger_df, mo):
     return
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(alt, last_state_passenger_df, mo):
     # plot time waiting vs time in vehicle using altair
     _chart = (
@@ -194,7 +211,7 @@ def _(alt, last_state_passenger_df, mo):
     return
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(alt, last_state_passenger_df, mo, passenger_df, pl):
     # pre-aggregate data
     _od_counts = last_state_passenger_df.group_by(["origin", "destination"]).agg(
@@ -251,7 +268,7 @@ def _(alt, last_state_passenger_df, mo, passenger_df, pl):
     return
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(alt, last_state_passenger_df, mo, passenger_df, pl):
     # pre-aggregate data
     _od_counts = last_state_passenger_df.group_by(
@@ -317,19 +334,19 @@ def _(mo):
     return
 
 
-@app.cell(disabled=True)
+@app.cell
 def _(fleet_df):
     fleet_df
     return
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""When was which vehicle full? Are they of the same routes?""")
     return
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(env, fleet_df, pl):
     try:
         _num_passengers_over_time = fleet_df.select(
@@ -354,49 +371,25 @@ def _(mo):
     return
 
 
-@app.cell(disabled=True, hide_code=True)
-def _(alt, env, fleet_df, pl):
-    _num_passengers_matrix = (
-        fleet_df.select(["time", "num_passengers", "current_from", "current_to"])
-        .filter(pl.col("num_passengers") == env.vehicle_capacity)
-        .group_by(["current_from", "current_to"])
-        .agg(pl.count("time").alias("count"))
-    )
-
-    (
-        alt.Chart(_num_passengers_matrix)
-        .mark_rect()
-        .encode(
-            x="current_from:N",
-            y="current_to:N",
-            color=alt.Color("count")
-            .scale(scheme="greenblue")
-            .title("Timesteps with full vehicles"),
-            tooltip=["current_from", "current_to", "count"],
-        )
-    )
-    return
-
-
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""## Routes""")
     return
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""How efficient are the routes compared to shortest path?""")
     return
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""How efficient is the actual travel time (in vehicle) compared to the shortest path?""")
     return
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(alt, jnp, last_state_passenger_df, mo, np, pl, states):
     # find shortest path for each od pair with floyd warshall algorithm
     def shortest_path_floyd_warshall(
@@ -443,8 +436,8 @@ def _(alt, jnp, last_state_passenger_df, mo, np, pl, states):
         alt.Chart(_df_shortest_path)
         .mark_rect()
         .encode(
-            x="origin:N",
-            y="destination:N",
+            y="origin:N",
+            x="destination:N",
             color=alt.Color(
                 "travel_time", scale=alt.Scale(scheme="greenblue"), title="min"
             ),
@@ -465,8 +458,8 @@ def _(alt, jnp, last_state_passenger_df, mo, np, pl, states):
         alt.Chart(_od_time_in_vehicle)
         .mark_rect()
         .encode(
-            x="origin:N",
-            y="destination:N",
+            y="origin:N",
+            x="destination:N",
             color=alt.Color("mean_time_in_vehicle")
             .scale(scheme="greenblue")
             .title("min"),
@@ -501,8 +494,8 @@ def _(alt, jnp, last_state_passenger_df, mo, np, pl, states):
         alt.Chart(combined_df)
         .mark_rect()
         .encode(
-            x="origin:N",
-            y="destination:N",
+            y="origin:N",
+            x="destination:N",
             color=alt.Color("diff").scale(scheme="greenblue").title("min"),
             tooltip=["origin", "destination", "diff"],
         )
@@ -524,13 +517,13 @@ def _(alt, jnp, last_state_passenger_df, mo, np, pl, states):
     return combined_df, shortest_path_floyd_warshall, shortest_paths
 
 
-@app.cell(disabled=True)
+@app.cell
 def _(passenger_df):
     passenger_df
     return
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""## Analysis of inefficient journeys""")
     return
@@ -804,217 +797,386 @@ def _(
     return (analyze_inefficient_journey,)
 
 
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
+def _(PassengerStatus, State, get_vehicles_position_and_dest_node, jnp, state):
+    def analyze_passenger_handling(state: State) -> None:
+        """Analyze the passenger handling logic for debugging purposes."""
+
+        # 1. First analyze vehicles at stops
+        is_at_stop = state.fleet.is_at_node
+        print("\nVEHICLE STOP ANALYSIS:")
+        print(f"Total vehicles at stops: {is_at_stop.sum()} / {len(is_at_stop)}")
+
+        # 2. Analyze passenger statuses and locations
+        current_from, current_to = get_vehicles_position_and_dest_node(state)
+
+        print("\nPASSENGER STATUS COUNTS:")
+        for status in PassengerStatus:
+            count = (state.passengers.statuses == status).sum()
+            print(f"{status.name}: {count}")
+
+        # 3. Analyze passengers in vehicles
+        print("\nVEHICLE PASSENGER ANALYSIS:")
+        for v_idx in range(state.fleet.num_vehicles):
+            if state.fleet.is_at_node[v_idx]:
+                route_id = state.fleet.route_ids[v_idx]
+                pos = current_from[v_idx]
+                passengers_in_vehicle = state.fleet.passengers[v_idx]
+                valid_passengers = passengers_in_vehicle[
+                    passengers_in_vehicle != -1
+                ]
+
+                if len(valid_passengers) > 0:
+                    print(f"\nVehicle {v_idx} at node {pos} (Route {route_id}):")
+                    print(f"Passengers: {valid_passengers}")
+
+                    # Check each passenger's destination
+                    for p_idx in valid_passengers:
+                        dest = state.passengers.destinations[p_idx]
+                        transfer_node = state.passengers.transfer_nodes[p_idx]
+                        has_transferred = state.passengers.has_transferred[p_idx]
+
+                        print(f"  Passenger {p_idx}:")
+                        print(f"    Destination: {dest}")
+                        print(f"    At destination: {pos == dest}")
+                        print(f"    Transfer node: {transfer_node}")
+                        print(f"    Has transferred: {has_transferred}")
+                        print(f"    At transfer node: {pos == transfer_node}")
+                        print(
+                            f"    Should exit: {pos == dest or (pos == transfer_node and not has_transferred)}"
+                        )
+
+        # 4. Analyze transfer opportunities
+        print("\nTRANSFER ANALYSIS:")
+        transferring_mask = (
+            state.passengers.statuses == PassengerStatus.TRANSFERRING
+        )
+        transferring_passengers = jnp.where(transferring_mask)[0]
+
+        if len(transferring_passengers) > 0:
+            print(
+                f"\nFound {len(transferring_passengers)} transferring passengers:"
+            )
+            for p_idx in transferring_passengers:
+                transfer_node = state.passengers.transfer_nodes[p_idx]
+                dest = state.passengers.destinations[p_idx]
+                wait_time = state.passengers.time_waiting[p_idx]
+
+                print(f"\nPassenger {p_idx}:")
+                print(f"  Transfer node: {transfer_node}")
+                print(f"  Final destination: {dest}")
+                print(f"  Waiting time: {wait_time}")
+
+                # Check available vehicles at transfer node
+                vehicles_at_node = (
+                    current_from == transfer_node
+                ) & state.fleet.is_at_node
+                if vehicles_at_node.any():
+                    print("  Available vehicles at transfer node:")
+                    for v_idx in jnp.where(vehicles_at_node)[0]:
+                        route_id = state.fleet.route_ids[v_idx]
+                        has_space = state.fleet.seat_is_available[v_idx]
+                        print(
+                            f"    Vehicle {v_idx} (Route {route_id}, Has space: {has_space})"
+                        )
+                else:
+                    print("  No vehicles currently at transfer node")
+
+        return None
+
+
+    # Call this function at key points in your simulation
+    analyze_passenger_handling(state)
+    return (analyze_passenger_handling,)
+
+
+@app.cell
+def _(State, get_vehicles_position_and_dest_node, jnp, states):
+    def analyze_vehicle_positions(state: State) -> None:
+        """Detailed analysis of vehicle positions and stop detection."""
+        print("\nDETAILED VEHICLE POSITION ANALYSIS:")
+
+        # Get vehicle positions
+        current_from, current_to = get_vehicles_position_and_dest_node(state)
+
+        for v_idx in range(state.fleet.num_vehicles):
+            route_id = state.fleet.route_ids[v_idx]
+            time_on_edge = state.fleet.times_on_edge[v_idx]
+            direction = state.fleet.directions[v_idx]
+            is_at_node = state.fleet.is_at_node[v_idx]
+
+            # Get the route
+            route = state.routes.stops[route_id]
+            valid_stops = route[route != -1]
+
+            print(f"\nVehicle {v_idx} (Route {route_id}):")
+            print(
+                f"  Current position: Node {current_from[v_idx]} -> Node {current_to[v_idx]}"
+            )
+            print(f"  Time on edge: {time_on_edge:.6f}")
+            print(f"  Direction: {'Forward' if direction == 0 else 'Backward'}")
+            print(f"  Is at node (according to is_at_node): {is_at_node}")
+            print(f"  Route: {' -> '.join(str(s) for s in valid_stops)}")
+
+            # Check if vehicle should be at a node
+            if jnp.isclose(time_on_edge, 0.0, rtol=1e-5, atol=1e-8):
+                print("  Should be at node (time_on_edge ≈ 0)")
+                if not is_at_node:
+                    print(
+                        "  WARNING: Vehicle should be at node but is_at_node is False!"
+                    )
+
+            # Get travel time for current edge
+            travel_time = state.network.travel_times[
+                current_from[v_idx], current_to[v_idx]
+            ]
+            print(f"  Edge travel time: {travel_time:.1f}")
+            print(f"  Progress on edge: {(time_on_edge / travel_time) * 100:.1f}%")
+
+        # Check is_at_node computation
+        print("\nIS_AT_NODE COMPUTATION CHECK:")
+        print(f"times_on_edge: {state.fleet.times_on_edge}")
+        print(
+            f"is_close_to_zero: {jnp.isclose(state.fleet.times_on_edge, 0.0, rtol=1e-5, atol=1e-8)}"
+        )
+        print(f"is_at_node: {state.fleet.is_at_node}")
+
+
+    analyze_vehicle_positions(states[-2])
+    return (analyze_vehicle_positions,)
+
+
+@app.cell(disabled=True)
 def _(
     PassengerStatus,
     State,
-    VehicleDirection,
-    calculate_route_times,
-    calculate_waiting_times,
-    find_best_transfer_route,
-    get_direction_if_connected,
+    get_vehicles_position_and_dest_node,
     jnp,
     states,
 ):
-    def analyze_stuck_passenger(
-        states: list[State], min_wait_time: float = 100.0
-    ) -> None:
-        """Analyze a passenger who has been waiting for a long time.
+    def analyze_stuck_in_vehicle_passengers(state: State) -> None:
+        """Analyze passengers who should exit vehicles but don't."""
+        print("\nANALYZING PASSENGERS THAT SHOULD EXIT VEHICLES:")
 
-        Args:
-            states: List of environment states
-            min_wait_time: Minimum waiting time to consider a passenger stuck
-        """
-        final_state = states[-1]
+        # Get vehicle positions
+        current_from, current_to = get_vehicles_position_and_dest_node(state)
 
-        # Find stuck passengers (long waiting times)
-        waiting_mask = final_state.passengers.statuses == PassengerStatus.WAITING
-        long_wait_mask = final_state.passengers.time_waiting > min_wait_time
-        stuck_passengers = jnp.where(waiting_mask & long_wait_mask)[0]
+        for v_idx in range(state.fleet.num_vehicles):
+            if state.fleet.is_at_node[v_idx]:
+                current_node = current_from[v_idx]
+                route_id = state.fleet.route_ids[v_idx]
+                passengers = state.fleet.passengers[v_idx]
+                valid_passengers = passengers[passengers != -1]
 
-        if len(stuck_passengers) == 0:
-            print("No stuck passengers found.")
-            return
+                if len(valid_passengers) > 0:
+                    print(
+                        f"\nVehicle {v_idx} at node {current_node} (Route {route_id}):"
+                    )
 
-        # Take first stuck passenger for analysis
-        p_idx = int(stuck_passengers[0])
+                    for p_idx in valid_passengers:
+                        dest = state.passengers.destinations[p_idx]
+                        transfer_node = state.passengers.transfer_nodes[p_idx]
+                        has_transferred = state.passengers.has_transferred[p_idx]
+                        status = state.passengers.statuses[p_idx]
+                        time_in_vehicle = state.passengers.time_in_vehicle[p_idx]
 
-        print("\n" + "=" * 80)
-        print(f"ANALYZING STUCK PASSENGER {p_idx}")
-        print("=" * 80)
+                        should_exit_dest = current_node == dest
+                        should_exit_transfer = (
+                            current_node == transfer_node
+                        ) & ~has_transferred
+                        should_exit = should_exit_dest | should_exit_transfer
 
-        print("\nBASIC INFO:")
-        origin = final_state.passengers.origins[p_idx]
-        dest = final_state.passengers.destinations[p_idx]
-        print(f"Origin: Node {origin}")
-        print(f"Destination: Node {dest}")
-        print(
-            f"Desired departure time: {final_state.passengers.desired_departure_times[p_idx]}"
-        )
-        print(
-            f"Current waiting time: {final_state.passengers.time_waiting[p_idx]}"
-        )
-        print(f"Current time: {final_state.current_time}")
-        print("\nTRANSFER INFO:")
-        print(
-            f"Has already transferred: {final_state.passengers.has_transferred[p_idx]}"
-        )
-        print(f"Transfer node: {final_state.passengers.transfer_nodes[p_idx]}")
-        if final_state.passengers.statuses[p_idx] == PassengerStatus.TRANSFERRING:
-            print("Currently in transfer!")
-            print(
-                f"Time waiting at transfer stop: {final_state.passengers.time_waiting[p_idx]}"
-            )
+                        if should_exit:
+                            print(f"\n  Passenger {p_idx} should exit:")
+                            print(f"    Current node: {current_node}")
+                            print(f"    Destination: {dest}")
+                            print(f"    Transfer node: {transfer_node}")
+                            print(f"    Has transferred: {has_transferred}")
+                            print(
+                                f"    Current status: {PassengerStatus(status).name}"
+                            )
+                            print(f"    Time in vehicle: {time_in_vehicle}")
+                            print(
+                                f"    Should exit due to: {'Destination' if should_exit_dest else 'Transfer'}"
+                            )
 
-        # Calculate route times and analyze transfer options
-        route_times, route_directions = calculate_route_times(final_state)
+                            # Analyze route coverage
+                            route = state.routes.stops[route_id]
+                            valid_stops = route[route != -1]
+                            print(
+                                f"    Current route: {' -> '.join(str(s) for s in valid_stops)}"
+                            )
 
-        print("\nDIRECT ROUTE ANALYSIS:")
-        # Check for direct routes first
-        direct_times = route_times[:, origin, dest]
-        direct_routes = jnp.where(jnp.isfinite(direct_times))[0]
-        if len(direct_routes) > 0:
-            print("Direct routes available:")
-            for r in direct_routes:
-                route = final_state.routes.stops[r]
+                            if should_exit_transfer:
+                                # Check if any route can complete the journey
+                                for r_idx in range(state.routes.num_routes):
+                                    route = state.routes.stops[r_idx]
+                                    valid_stops = route[route != -1]
+                                    if (
+                                        transfer_node in valid_stops
+                                        and dest in valid_stops
+                                    ):
+                                        transfer_idx = jnp.where(
+                                            valid_stops == transfer_node
+                                        )[0][0]
+                                        dest_idx = jnp.where(valid_stops == dest)[
+                                            0
+                                        ][0]
+                                        if transfer_idx < dest_idx:
+                                            print(
+                                                f"    Available connecting route {r_idx}: {' -> '.join(str(s) for s in valid_stops)}"
+                                            )
+
+        # Also check for any IN_VEHICLE passengers at their destinations
+        in_vehicle_mask = state.passengers.statuses == PassengerStatus.IN_VEHICLE
+        if in_vehicle_mask.any():
+            print("\nChecking all IN_VEHICLE passengers:")
+            in_vehicle_passengers = jnp.where(in_vehicle_mask)[0]
+
+            for p_idx in in_vehicle_passengers:
+                # Find which vehicle the passenger is in
+                for v_idx in range(state.fleet.num_vehicles):
+                    if p_idx in state.fleet.passengers[v_idx]:
+                        current_node = current_from[v_idx]
+                        dest = state.passengers.destinations[p_idx]
+                        transfer_node = state.passengers.transfer_nodes[p_idx]
+                        has_transferred = state.passengers.has_transferred[p_idx]
+                        time_in_vehicle = state.passengers.time_in_vehicle[p_idx]
+
+                        if (current_node == dest) or (
+                            current_node == transfer_node and not has_transferred
+                        ):
+                            print(
+                                f"\nPassenger {p_idx} in vehicle {v_idx} should exit at node {current_node}:"
+                            )
+                            print(f"  Destination: {dest}")
+                            print(f"  Transfer node: {transfer_node}")
+                            print(f"  Has transferred: {has_transferred}")
+                            print(f"  Time in vehicle: {time_in_vehicle}")
+                            print(
+                                f"  Vehicle is_at_node: {state.fleet.is_at_node[v_idx]}"
+                            )
+                            print(
+                                f"  Vehicle time_on_edge: {state.fleet.times_on_edge[v_idx]}"
+                            )
+
+
+    analyze_stuck_in_vehicle_passengers(states[50])
+    return (analyze_stuck_in_vehicle_passengers,)
+
+
+@app.cell
+def _(PassengerStatus, State, get_vehicles_position_and_dest_node, states):
+    def analyze_all_vehicle_passengers(state: State) -> None:
+        """Show detailed info for all passengers in vehicles."""
+        print("\nDETAILED VEHICLE PASSENGER ANALYSIS:")
+
+        current_from, current_to = get_vehicles_position_and_dest_node(state)
+
+        for v_idx in range(state.fleet.num_vehicles):
+            passengers = state.fleet.passengers[v_idx]
+            valid_passengers = passengers[passengers != -1]
+
+            if len(valid_passengers) > 0:
+                current_node = current_from[v_idx]
+                route_id = state.fleet.route_ids[v_idx]
+                route = state.routes.stops[route_id]
                 valid_stops = route[route != -1]
-                print(
-                    f"  Route {r} ({' -> '.join(str(s) for s in valid_stops)}): {direct_times[r]:.1f}"
-                )
-        else:
-            print("No direct routes available")
 
-        print("\nTRANSFER OPTIONS ANALYSIS:")
-        best_time, transfer_node, first_leg_route, second_leg_route = (
-            find_best_transfer_route(final_state, origin, dest, route_times)
+                print(
+                    f"\nVehicle {v_idx} at/between node(s) {current_from[v_idx]} -> {current_to[v_idx]}:"
+                )
+                print(
+                    f"  Route {route_id}: {' -> '.join(str(s) for s in valid_stops)}"
+                )
+                print(f"  Is at node: {state.fleet.is_at_node[v_idx]}")
+                print(f"  Time on edge: {state.fleet.times_on_edge[v_idx]}")
+                print(
+                    f"  Direction: {'Forward' if state.fleet.directions[v_idx] == 0 else 'Backward'}"
+                )
+                print(f"  Passengers ({len(valid_passengers)}):")
+
+                for p_idx in valid_passengers:
+                    dest = state.passengers.destinations[p_idx]
+                    transfer_node = state.passengers.transfer_nodes[p_idx]
+                    has_transferred = state.passengers.has_transferred[p_idx]
+                    status = state.passengers.statuses[p_idx]
+                    time_in_vehicle = state.passengers.time_in_vehicle[p_idx]
+
+                    print(f"\n    Passenger {p_idx}:")
+                    print(f"      Status: {PassengerStatus(status).name}")
+                    print(
+                        f"      Current location: {current_from[v_idx]} -> {current_to[v_idx]}"
+                    )
+                    print(f"      Destination: {dest}")
+                    print(f"      Transfer node: {transfer_node}")
+                    print(f"      Has transferred: {has_transferred}")
+                    print(f"      Time in vehicle: {time_in_vehicle}")
+
+                    # Check if should exit
+                    should_exit_dest = (
+                        current_node == dest and state.fleet.is_at_node[v_idx]
+                    )
+                    should_exit_transfer = (
+                        current_node == transfer_node
+                        and not has_transferred
+                        and state.fleet.is_at_node[v_idx]
+                    )
+
+                    if should_exit_dest:
+                        print(f"      *** Should exit - at destination! ***")
+                    elif should_exit_transfer:
+                        print(f"      *** Should exit - at transfer node! ***")
+
+        print("\nSummary:")
+        print(
+            f"Total passengers in vehicles: {(state.fleet.passengers != -1).sum()}"
+        )
+        print(
+            f"Total vehicles with passengers: {((state.fleet.passengers != -1).sum(axis=1) > 0).sum()}"
         )
 
-        if jnp.isfinite(best_time):
-            print(f"Best transfer option:")
-            print(f"  First leg: Route {first_leg_route} to node {transfer_node}")
-            print(f"  Second leg: Route {second_leg_route} to destination")
-            print(f"  Total expected time: {best_time:.1f}")
 
-            # Show detailed path
-            route1 = final_state.routes.stops[first_leg_route]
-            route2 = final_state.routes.stops[second_leg_route]
-            valid_stops1 = route1[route1 != -1]
-            valid_stops2 = route2[route2 != -1]
-            print(f"\nDetailed transfer path:")
-            print(
-                f"  First leg route: {' -> '.join(str(s) for s in valid_stops1)}"
-            )
-            print(
-                f"  Second leg route: {' -> '.join(str(s) for s in valid_stops2)}"
-            )
-        else:
-            print("No valid transfer path found!")
+    analyze_all_vehicle_passengers(states[-15])
+    return (analyze_all_vehicle_passengers,)
 
-        print("\nRELEVANT VEHICLES ANALYSIS:")
-        relevant_vehicles = []
-        for v_idx in range(final_state.fleet.num_vehicles):
-            route_id = final_state.fleet.route_ids[v_idx]
-            pos = final_state.fleet.current_edges[v_idx, 0]
-            next_pos = final_state.fleet.current_edges[v_idx, 1]
-            direction = (
-                "FWD"
-                if final_state.fleet.directions[v_idx] == VehicleDirection.FORWARD
-                else "BWD"
-            )
-            has_space = final_state.fleet.seat_is_available[v_idx]
 
-            # Check if vehicle's route contains either origin or destination
-            vehicle_route = final_state.routes.stops[route_id]
-            valid_stops = vehicle_route[vehicle_route != -1]
+@app.cell
+def _(State, jnp, states):
+    def analyze_passenger_assignment(state: State, passenger_idx: int) -> None:
+        """Analyze why a passenger was assigned to a particular route."""
+        print(f"\nAnalyzing assignment for passenger {passenger_idx}:")
+        origin = state.passengers.origins[passenger_idx]
+        dest = state.passengers.destinations[passenger_idx]
+        print(f"Origin: {origin}, Destination: {dest}")
 
-            if origin in valid_stops or dest in valid_stops:
-                relevant_vehicles.append(v_idx)
-                print(f"\nVehicle {v_idx} (Route {route_id}):")
-                print(f"  Current position: Node {pos} -> Node {next_pos}")
-                print(f"  Direction: {direction}")
-                print(f"  Has space: {has_space}")
+        # Check all routes
+        for r_idx in range(state.routes.num_routes):
+            route = state.routes.stops[r_idx]
+            valid_stops = route[route != -1]
+            print(f"\nRoute {r_idx}: {' -> '.join(str(s) for s in valid_stops)}")
+
+            # Check if origin and destination are on route
+            origin_on_route = origin in valid_stops
+            dest_on_route = dest in valid_stops
+            print(f"Origin on route: {origin_on_route}")
+            print(f"Destination on route: {dest_on_route}")
+
+            if origin_on_route and dest_on_route:
+                origin_idx = jnp.where(valid_stops == origin)[0][0]
+                dest_idx = jnp.where(valid_stops == dest)[0][0]
+                print(f"Origin at position: {origin_idx}")
+                print(f"Destination at position: {dest_idx}")
                 print(
-                    f"  Time on edge: {final_state.fleet.times_on_edge[v_idx]:.1f}"
-                )
-                print(f"  Route: {' -> '.join(str(s) for s in valid_stops)}")
-                print(
-                    f"  Current occupancy: {final_state.fleet.num_passengers[v_idx]}/{len(final_state.fleet.passengers[v_idx])}"
+                    f"Correct direction: {'Forward' if dest_idx > origin_idx else 'Backward'}"
                 )
 
-                # Check if origin/dest are in route
-                if origin in valid_stops:
-                    origin_idx = jnp.where(valid_stops == origin)[0][0]
-                    print(f"  Origin is stop #{origin_idx} in route")
-                if dest in valid_stops:
-                    dest_idx = jnp.where(valid_stops == dest)[0][0]
-                    print(f"  Destination is stop #{dest_idx} in route")
 
-        print("\nBOARDING DECISION ANALYSIS:")
-        # Get the state when passenger first became WAITING
-        start_time = final_state.passengers.desired_departure_times[p_idx]
-        waiting_start_idx = int(start_time)
-        if waiting_start_idx < len(states):
-            initial_state = states[waiting_start_idx]
-            print(
-                f"\nAnalyzing initial boarding opportunity at t={waiting_start_idx}:"
-            )
-
-            # Calculate waiting times for that state
-            route_times, route_directions = calculate_route_times(initial_state)
-            waiting_times = calculate_waiting_times(
-                initial_state, route_times, route_directions
-            )
-
-            # For each relevant vehicle, show why boarding wasn't possible
-            for v_idx in relevant_vehicles:
-                route_id = initial_state.fleet.route_ids[v_idx]
-                direction = initial_state.fleet.directions[v_idx]
-                pos = initial_state.fleet.current_edges[v_idx, 0]
-
-                print(f"\nVehicle {v_idx} (Route {route_id}):")
-                is_at_stop = initial_state.fleet.is_at_node[v_idx]
-                at_origin = pos == origin
-                has_space = initial_state.fleet.seat_is_available[v_idx]
-
-                required_direction = get_direction_if_connected(
-                    initial_state, origin, dest
-                )[route_id]
-                moves_in_best_direction = (required_direction != -1) & (
-                    direction == required_direction
-                )
-
-                print(f"  At correct stop: {is_at_stop and at_origin}")
-                print(f"  Has space: {has_space}")
-                print(f"  Current direction: {direction}")
-                print(f"  Required direction: {required_direction}")
-                print(f"  Moving in best direction: {moves_in_best_direction}")
-
-                if (
-                    is_at_stop
-                    and at_origin
-                    and has_space
-                    and moves_in_best_direction
-                ):
-                    print("  Should have been able to board!")
-                else:
-                    print("  Boarding not possible due to:")
-                    if not is_at_stop:
-                        print("   - Vehicle not at a stop")
-                    if not at_origin:
-                        print("   - Vehicle not at passenger origin")
-                    if not has_space:
-                        print("   - No space available")
-                    if not moves_in_best_direction:
-                        print("   - Wrong direction")
-
-        return p_idx  # Return passenger index for further analysis if needed
+    analyze_passenger_assignment(states[-15], 28)
+    return (analyze_passenger_assignment,)
 
 
-    analyze_stuck_passenger(states, min_wait_time=100.0)
-    return (analyze_stuck_passenger,)
-
-
-@app.cell(disabled=True, hide_code=True)
+@app.cell(hide_code=True)
 def _(
     Array,
     Bool,
@@ -1228,6 +1390,237 @@ def _(
     return (debug_assign_single_passenger,)
 
 
+@app.cell
+def _(
+    PassengerStatus,
+    State,
+    calculate_route_times,
+    calculate_travel_times,
+    find_best_transfer_route,
+    get_vehicles_position_and_dest_node,
+    jnp,
+    np,
+    states,
+):
+    def identify_stranded_passengers(
+        final_state: State, limit: int = 5
+    ) -> list[int]:
+        """Find passengers who never completed their journey."""
+        waiting_mask = final_state.passengers.statuses == PassengerStatus.WAITING
+        transferring_mask = (
+            final_state.passengers.statuses == PassengerStatus.TRANSFERRING
+        )
+        stranded_mask = waiting_mask | transferring_mask
+
+        stranded_indices = jnp.where(stranded_mask)[0]
+        num_stranded = len(stranded_indices)
+        total_passengers = final_state.passengers.num_passengers
+
+        print(
+            f"Found {num_stranded} stranded passengers out of {total_passengers} ({num_stranded / total_passengers * 100:.1f}%)"
+        )
+
+        # Get some additional stats about the stranded passengers
+        if num_stranded > 0:
+            waiting_time = final_state.passengers.time_waiting[stranded_indices]
+            print(f"Average waiting time: {waiting_time.mean():.1f}")
+            print(f"Max waiting time: {waiting_time.max():.1f}")
+
+            # Show distribution of origins/destinations
+            origins = final_state.passengers.origins[stranded_indices]
+            destinations = final_state.passengers.destinations[stranded_indices]
+
+            print("\nTop origin nodes for stranded passengers:")
+            unique_origins, counts = np.unique(origins, return_counts=True)
+            for idx in np.argsort(-counts)[:3]:  # Top 3
+                print(f"  Node {unique_origins[idx]}: {counts[idx]} passengers")
+
+            print("\nTop destination nodes for stranded passengers:")
+            unique_dests, counts = np.unique(destinations, return_counts=True)
+            for idx in np.argsort(-counts)[:3]:  # Top 3
+                print(f"  Node {unique_dests[idx]}: {counts[idx]} passengers")
+
+        # Return a sample of stranded passengers
+        return stranded_indices[:limit].tolist()
+
+
+    def analyze_boarding_opportunities(
+        states: list[State], passenger_idx: int
+    ) -> None:
+        """Analyze specific instances where a passenger should have boarded a vehicle."""
+        print(f"\n{'=' * 80}")
+        print(f"ANALYZING BOARDING OPPORTUNITIES FOR PASSENGER {passenger_idx}")
+        print(f"{'=' * 80}")
+
+        # Get passenger info from final state
+        final_state = states[-1]
+        origin = final_state.passengers.origins[passenger_idx]
+        destination = final_state.passengers.destinations[passenger_idx]
+
+        print(f"Origin: Node {origin}")
+        print(f"Destination: Node {destination}")
+
+        # Find when passenger became WAITING
+        became_waiting_at = None
+        for t, state in enumerate(states):
+            if state.passengers.statuses[passenger_idx] == PassengerStatus.WAITING:
+                became_waiting_at = t
+                break
+
+        if became_waiting_at is None:
+            print("Passenger never entered WAITING state!")
+            return
+
+        print(f"Passenger became WAITING at time {became_waiting_at}")
+
+        # Find time points where vehicles were at the passenger's origin
+        boarding_opportunities = []
+        for t in range(became_waiting_at, len(states)):
+            state = states[t]
+
+            # Skip if passenger is no longer waiting
+            if state.passengers.statuses[passenger_idx] != PassengerStatus.WAITING:
+                continue
+
+            # Check if any vehicles are at the passenger's origin
+            current_from, _ = get_vehicles_position_and_dest_node(state)
+            vehicles_at_origin = jnp.where(
+                (current_from == origin) & state.fleet.is_at_node
+            )[0]
+
+            if len(vehicles_at_origin) > 0:
+                boarding_opportunities.append((t, vehicles_at_origin))
+
+        print(
+            f"\nFound {len(boarding_opportunities)} potential boarding opportunities"
+        )
+
+        # Analyze each boarding opportunity in detail
+        for i, (t, vehicles) in enumerate(
+            boarding_opportunities[:5]
+        ):  # Limit to first 5
+            state = states[t]
+
+            print(f"\nBOARDING OPPORTUNITY {i + 1} at time {t}:")
+            print(f"  {len(vehicles)} vehicle(s) at passenger's origin")
+
+            # Calculate travel times
+            travel_times_per_vehicle = calculate_travel_times(state)
+
+            # Run through the same logic as in assign_passengers
+            for v_idx in vehicles:
+                route_id = state.fleet.route_ids[v_idx]
+                has_capacity = state.fleet.capacities_left[v_idx] > 0
+
+                print(f"\n  Vehicle {v_idx} (Route {route_id}):")
+                print(f"    Has capacity: {has_capacity}")
+
+                if not has_capacity:
+                    print("    ❌ Cannot board - vehicle is full")
+                    continue
+
+                # Check direct route
+                direct_time = travel_times_per_vehicle[v_idx, origin, destination]
+                has_direct_route = jnp.isfinite(direct_time)
+
+                if has_direct_route:
+                    print(
+                        f"    Direct route available - travel time: {direct_time:.1f}"
+                    )
+                    travel_time = direct_time
+                    effective_dest = destination
+                else:
+                    # Check for transfer option
+                    best_time, transfer_node, first_leg, second_leg = (
+                        find_best_transfer_route(
+                            state, origin, destination, travel_times_per_vehicle
+                        )
+                    )
+
+                    if transfer_node != -1:
+                        print(
+                            f"    Transfer route via node {transfer_node} - travel time: {best_time:.1f}"
+                        )
+                        travel_time = travel_times_per_vehicle[
+                            v_idx, origin, transfer_node
+                        ]
+                        effective_dest = transfer_node
+                    else:
+                        print("    ❌ No viable route to destination")
+                        continue
+
+                # Calculate boarding decision factors
+                route_times, _ = calculate_route_times(state)
+                shortest_travel_time_overall = jnp.min(route_times, axis=0)
+                best_future_time = shortest_travel_time_overall[
+                    origin, effective_dest
+                ]
+
+                # Apply the boarding threshold
+                max_travel_time_ratio = 1.2  # Default from assign_passengers
+                should_board = (
+                    travel_time <= best_future_time * max_travel_time_ratio
+                )
+
+                print(f"    Current travel time: {travel_time:.1f}")
+                print(f"    Best future time: {best_future_time:.1f}")
+                print(
+                    f"    Threshold (best_future * {max_travel_time_ratio}): {best_future_time * max_travel_time_ratio:.1f}"
+                )
+
+                if should_board:
+                    print(
+                        f"    ✅ Should board! (ratio: {travel_time / best_future_time:.2f})"
+                    )
+
+                    # Double-check that all boarding conditions are satisfied
+                    actual_cond = (
+                        state.fleet.is_at_node[v_idx]
+                        and (current_from[v_idx] == origin)
+                        and (state.fleet.capacities_left[v_idx] > 0)
+                        and jnp.isfinite(travel_time)
+                        and (
+                            travel_time <= best_future_time * max_travel_time_ratio
+                        )
+                    )
+
+                    print(f"    All conditions met: {actual_cond}")
+                    print(f"    is_at_node: {state.fleet.is_at_node[v_idx]}")
+                    print(
+                        f"    at_correct_location: {current_from[v_idx] == origin}"
+                    )
+                    print(
+                        f"    has_capacity: {state.fleet.capacities_left[v_idx] > 0}"
+                    )
+                    print(f"    finite_travel_time: {jnp.isfinite(travel_time)}")
+                    print(
+                        f"    ratio_acceptable: {travel_time <= best_future_time * max_travel_time_ratio}"
+                    )
+
+                    # This passenger should have boarded but didn't, likely a bug!
+                    print(
+                        "\n    🔴 BUG DETECTED: Passenger should have boarded but didn't!"
+                    )
+                else:
+                    print(
+                        f"    ❌ Should not board (ratio: {travel_time / best_future_time if jnp.isfinite(best_future_time) else 'inf':.2f})"
+                    )
+
+
+    # Find stranded passengers
+    stranded_passengers = identify_stranded_passengers(states[-1])
+
+    # For each stranded passenger, analyze their boarding opportunities
+    for passenger_idx in stranded_passengers:
+        analyze_boarding_opportunities(states, passenger_idx)
+    return (
+        analyze_boarding_opportunities,
+        identify_stranded_passengers,
+        passenger_idx,
+        stranded_passengers,
+    )
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""## Run simulation""")
@@ -1237,14 +1630,21 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(Mandl, PassengerStatus, jax, jnp):
     # Create environment
-    n_steps = (24 * 60) + 1000
+    n_steps = 200
+    buffer_steps = 50
+
     key = jax.random.PRNGKey(42)
     env = Mandl(
         network_name="mandl1",
-        runtime=n_steps - 1000,
+        solution_name="yoo2023with8stops",
+        runtime=n_steps,
+        buffer_time_end=buffer_steps,
         vehicle_capacity=50,
+        num_fix_routes=0,
         num_flex_routes=0,
-        max_route_length=0,
+        max_route_length=8,
+        total_vehicles=99,
+        passenger_init_mode="evenly_spaced",
     )
 
     # Reset environment and get initial state
@@ -1295,7 +1695,7 @@ def _(Mandl, PassengerStatus, jax, jnp):
         state, timestep = step(state, action)
         states.append(state)
 
-        if n > 2_000:
+        if n > 200:
             break
 
     print(
@@ -1317,6 +1717,7 @@ def _(Mandl, PassengerStatus, jax, jnp):
     final_state = state
     return (
         action,
+        buffer_steps,
         env,
         final_state,
         key,
@@ -1376,7 +1777,7 @@ def _(plt, state):
 
 
 @app.cell(hide_code=True)
-def _(State, np, plt, rgb, state, svgwrite):
+def _(State, np, plt, rgb, svgwrite):
     def create_network_svg(
         state: State, width: int = 600, height: int = 600, margin: int = 50
     ) -> svgwrite.Drawing:
@@ -1516,7 +1917,7 @@ def _(State, np, plt, rgb, state, svgwrite):
         return dwg
 
 
-    create_network_svg(state)
+    # create_network_svg(state)
     return (create_network_svg,)
 
 
@@ -1544,8 +1945,8 @@ def _(State, np, pl, states):
                     "time": np.full(state.fleet.num_vehicles, t),
                     "vehicle_id": np.arange(state.fleet.num_vehicles),
                     "route_id": np.array(state.fleet.route_ids),
-                    "current_from": np.array(state.fleet.current_edges)[:, 0],
-                    "current_to": np.array(state.fleet.current_edges)[:, 1],
+                    # current_from": np.array(state.fleet.current_edges)[:, 0],
+                    # "current_to": np.array(state.fleet.current_edges)[:, 1],
                     "time_on_edge": np.array(state.fleet.times_on_edge),
                     "direction": np.array(state.fleet.directions),
                     "at_node": np.array(state.fleet.is_at_node),
@@ -1628,6 +2029,168 @@ def _(State, np, pl, states):
     )
 
 
+@app.cell
+def _(states):
+    states[-1].routes.stops
+    return
+
+
+@app.cell
+def _(states):
+    states[-1].fleet
+    return
+
+
+@app.cell
+def _(n_steps, states):
+    for _i in range(n_steps):
+        print(states[_i].fleet.times_on_edge)
+    return
+
+
+@app.cell
+def _(n_steps, states):
+    for _i in range(n_steps):
+        print(states[_i].fleet.current_edges)
+    return
+
+
+@app.cell
+def _(n_steps, states):
+    for _i in range(n_steps):
+        print(states[_i].fleet.directions)
+    return
+
+
+@app.cell
+def _(n_steps, states):
+    def _():
+        from collections import defaultdict
+
+        # Dictionary to track (route, node) combinations
+        route_node_stats = defaultdict(lambda: {"count": 0, "capacities": []})
+
+        for _i in range(n_steps):
+            _state = states[_i]
+
+            # For each vehicle that's at a node
+            for v_idx in range(_state.fleet.num_vehicles):
+                if _state.fleet.is_at_node[v_idx]:
+                    route_id = _state.fleet.route_ids[v_idx]
+                    edge_idx = _state.fleet.current_edges[v_idx]
+
+                    # Get the actual node from the route definition
+                    # The vehicle is at the "from" node of the current edge
+                    node = _state.routes.stops[route_id, edge_idx]
+
+                    # Create key and record data
+                    key = (int(route_id), int(node))
+                    route_node_stats[key]["count"] += 1
+                    route_node_stats[key]["capacities"].append(
+                        int(_state.fleet.capacities_left[v_idx])
+                    )
+
+        # Print results grouped by route and node
+        print("Route, Node: Total vehicle arrivals, [Capacities left each time]")
+        print("--------------------------------------------------------")
+        for (route, node), data in sorted(route_node_stats.items()):
+            print(
+                f"Route {route}, Node {node}: {data['count']} arrivals, capacities: {data['capacities']}"
+            )
+
+        # Summary statistics to show bunching
+        print("\nBunching Statistics:")
+        print("-------------------")
+        for (route, node), data in sorted(route_node_stats.items()):
+            # Count instances where multiple vehicles arrived simultaneously (same timestep)
+            timestep_counts = defaultdict(int)
+            for i in range(n_steps):
+                vehicles_at_node = 0
+                for v_idx in range(states[i].fleet.num_vehicles):
+                    if (
+                        states[i].fleet.is_at_node[v_idx]
+                        and states[i].fleet.route_ids[v_idx] == route
+                        and states[i].routes.stops[
+                            route, states[i].fleet.current_edges[v_idx]
+                        ]
+                        == node
+                    ):
+                        vehicles_at_node += 1
+                if vehicles_at_node > 0:
+                    timestep_counts[vehicles_at_node] += 1
+
+            # Print bunching statistics
+            if len(timestep_counts) > 0:
+                max_bunch = max(timestep_counts.keys())
+                if max_bunch > 1:  # Only show nodes with bunching
+                    print(
+                        f"Route {route}, Node {node}: max vehicles at once = {max_bunch}"
+                    )
+                    for num, count in sorted(timestep_counts.items()):
+                        print(f"  {num} vehicle(s) arrived {count} times")
+        return print(f"  {num} vehicle(s) arrived {count} times")
+
+
+    _()
+    return
+
+
+@app.cell
+def _(n_steps, states):
+    for _i in range(n_steps):
+        _state = states[_i]
+        _capacity = _state.fleet.capacities_left[_state.fleet.is_at_node]
+        print(f"{_i} - capacity left: {_capacity}")
+    return
+
+
+@app.cell
+def _(State, jnp, states):
+    def analyze_route_edge_indices(state: State) -> None:
+        """Analyze edge indices and reversal conditions for each route."""
+        print("\nROUTE EDGE INDEX ANALYSIS:")
+
+        for r_idx in range(state.routes.num_routes):
+            route = state.routes.stops[r_idx]
+            valid_stops = route[route != -1]
+            num_valid_stops = len(valid_stops)
+            num_edges = num_valid_stops - 1
+
+            print(f"\nRoute {r_idx}:")
+            print(f"  Stops: {' -> '.join(str(s) for s in valid_stops)}")
+            print(f"  Number of valid stops: {num_valid_stops}")
+            print(f"  Number of edges: {num_edges}")
+
+            # Calculate last_valid_edge_idx using current method
+            max_num_stops = state.routes.stops.shape[1]
+            max_num_edges = max_num_stops - 1
+            last_valid_edge_idx = max_num_edges - (route == -1).sum() - 1
+
+            print(f"  Last valid edge index (current): {last_valid_edge_idx}")
+            print(f"  Last valid edge index (should be): {num_edges - 1}")
+
+            # Show vehicles on this route
+            route_vehicles = jnp.where(state.fleet.route_ids == r_idx)[0]
+            print("\n  Vehicles on route:")
+            for v_idx in route_vehicles:
+                print(f"    Vehicle {v_idx}:")
+                print(f"      Current edge: {state.fleet.current_edges[v_idx]}")
+                print(
+                    f"      Direction: {'Forward' if state.fleet.directions[v_idx] == 0 else 'Backward'}"
+                )
+                print(f"      Time on edge: {state.fleet.times_on_edge[v_idx]}")
+
+                # Check reversal conditions
+                is_at_end = state.fleet.current_edges[v_idx] == last_valid_edge_idx
+                is_at_start = state.fleet.current_edges[v_idx] == 0
+                print(f"      Is at end: {is_at_end}")
+                print(f"      Is at start: {is_at_start}")
+
+
+    analyze_route_edge_indices(states[70])
+    return (analyze_route_edge_indices,)
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""## Imports""")
@@ -1660,8 +2223,7 @@ def _():
 
     from jumanji.environments.routing.mandl.types import (
         VehicleDirection,
-        calculate_waiting_times,
-        calculate_route_times,
+        calculate_shortest_route_times,
         find_best_transfer_route,
         PassengerStatus,
         State,
@@ -1674,12 +2236,16 @@ def _():
         handle_completed_and_transferring_passengers,
         get_position_in_route,
         get_direction_if_connected,
+        get_vehicles_position_and_dest_node,
+        calculate_invehicle_times,
+        floyd_warshall,
     )
     from jaxtyping import Int, Float, Bool, Array
     from dataclasses import replace
 
     import scienceplots
-    plt.style.use(["science", "ieee"])
+
+    # plt.style.use(["science", "ieee"])
     return (
         Array,
         Bool,
@@ -1692,11 +2258,13 @@ def _():
         VehicleDirection,
         add_passenger,
         alt,
-        calculate_route_times,
-        calculate_waiting_times,
+        calculate_invehicle_times,
+        calculate_shortest_route_times,
         find_best_transfer_route,
+        floyd_warshall,
         get_direction_if_connected,
         get_position_in_route,
+        get_vehicles_position_and_dest_node,
         handle_completed_and_transferring_passengers,
         hvplot,
         increment_in_vehicle_times,
@@ -1717,6 +2285,16 @@ def _():
         update_passengers_to_waiting,
         update_routes,
     )
+
+
+@app.cell
+def _():
+    return
+
+
+@app.cell
+def _():
+    return
 
 
 if __name__ == "__main__":

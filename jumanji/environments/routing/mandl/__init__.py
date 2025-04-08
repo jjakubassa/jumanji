@@ -26,8 +26,7 @@ from .types import (
     _update_completed_vehicles,
     add_passenger,
     assign_passengers,
-    calculate_route_times,
-    calculate_waiting_times,
+    calculate_shortest_route_times,
     find_best_transfer_route,
     get_direction_if_connected,
     get_last_stops,
@@ -43,7 +42,6 @@ from .types import (
     step,
     update_passengers_to_waiting,
     update_routes,
-    vehicle_is_ahead_of_node,
 )
 from .utils import VehicleDirection
 
@@ -62,7 +60,7 @@ __all__ = [
     "_update_completed_vehicles",
     "add_passenger",
     "assign_passengers",
-    "calculate_route_times",
+    "calculate_shortest_route_times",
     "find_best_transfer_route",
     "get_last_stops",
     "get_travel_time",

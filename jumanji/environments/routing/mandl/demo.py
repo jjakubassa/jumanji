@@ -35,14 +35,15 @@ def main() -> State:
     buffer_steps = 50
     total_steps = n_steps + buffer_steps
     env = Mandl(
-        network_name="ceder1",
-        solution_name="ceder1",
+        network_name="mandl1",
+        solution_name="yoo2023with8stops",
         runtime=n_steps,
         buffer_time_end=buffer_steps,
         vehicle_capacity=50,
         num_fix_routes=0,
         num_flex_routes=0,
-        max_route_length=0,
+        max_route_length=3,
+        total_vehicles=99,
         passenger_init_mode="evenly_spaced",
     )
 
@@ -71,7 +72,7 @@ def main() -> State:
         direction = "Forward" if state.fleet.directions[i] == 0 else "Backward"
         time_on_edge = state.fleet.times_on_edge[i]
         print(
-            f"Vehicle {i+1}: Edge {edge[0]+1}->{edge[1]+1}, Direction: {direction}, "
+            f"Vehicle {i+1}: Edge {edge}, Direction: {direction}, "
             + f"Time on edge: {time_on_edge:.1f}"
         )
 
