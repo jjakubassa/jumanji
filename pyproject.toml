@@ -40,7 +40,6 @@ dependencies = [
     "pillow>=9.0.0",
     "pre-commit>=4.2.0",
     "rl-zoo3>=2.5.0",
-    "tensorflow>=2.0.0",
     "typing-extensions>=4.0.0",
     "vegafusion>=2.0.2",
     "vl-convert-python>=1.6.0",
