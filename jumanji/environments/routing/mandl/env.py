@@ -470,7 +470,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 maximum=num_vehicles,
             ),
             fleet_positions=specs.BoundedArray(
-                shape=(num_vehicles * 2,),  # Flattened
+                shape=(num_vehicles,),  # Flattened
                 dtype=int,
                 minimum=0,
                 maximum=num_nodes - 1,
@@ -599,7 +599,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             network_shortest_times=self._network_shortest_times.flatten(),
             # Fleet data
             num_vehicles=jnp.array([state.fleet.num_vehicles]),
-            fleet_positions=state.fleet.current_edges.flatten(),
+            fleet_positions=state.fleet.current_edges,
             # Aggregated passenger data
             future_demand=future_demand.flatten(),
             waiting_demand=waiting_demand.flatten(),
