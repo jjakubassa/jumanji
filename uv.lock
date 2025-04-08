@@ -1471,7 +1471,7 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'dev'", specifier = ">=1.7.3" },
     { name = "stable-baselines3", marker = "extra == 'mandl'", specifier = ">=2.4.0" },
     { name = "submitit", marker = "extra == 'mandl'", specifier = ">=1.5.2" },
-    { name = "tensorboard", marker = "extra == 'mandl'", specifier = ">=2.19.0" },
+    { name = "tensorboard", marker = "extra == 'mandl'", specifier = ">=2.0.0" },
     { name = "tensorboardx", marker = "extra == 'train'" },
     { name = "tensorflow", specifier = ">=2.0.0" },
     { name = "testfixtures", marker = "extra == 'dev'", specifier = ">=8.3.0" },
