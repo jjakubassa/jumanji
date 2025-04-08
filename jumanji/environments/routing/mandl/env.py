@@ -32,7 +32,7 @@ from jumanji.environments.routing.mandl.types import (
     RouteType,
     State,
     assign_passengers,
-    calculate_invehicle_times,
+    calculate_shortest_route_times,
     find_best_transfer_route,
     floyd_warshall,
     get_last_stops,
@@ -566,15 +566,15 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         transferring_demand = transferring_demand.at[origins, destinations].add(transferring_mask)
 
         # Calculate travel times
-        travel_times_per_vehicle = calculate_invehicle_times(state)
-        direct_times = jnp.min(travel_times_per_vehicle, axis=0)
+        travel_times, _ = calculate_shortest_route_times(state)
+        direct_times = jnp.min(travel_times, axis=0)
 
         transfer_times = jax.lax.cond(
             state.routes.num_flex_routes == state.routes.num_routes,
             lambda: jnp.full((num_nodes, num_nodes), jnp.inf),
             lambda: jax.vmap(
                 jax.vmap(
-                    lambda o, d: find_best_transfer_route(state, o, d, travel_times_per_vehicle)[0],
+                    lambda o, d: find_best_transfer_route(state, o, d, travel_times)[0],
                     in_axes=(None, 0),
                 ),
                 in_axes=(0, None),
