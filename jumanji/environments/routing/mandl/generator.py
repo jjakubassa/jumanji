@@ -80,8 +80,8 @@ class Generator(abc.ABC):
         self.demand_data = load_demand_data(network_name)
 
         # Load solution routes if specified
-        self._routes: tuple[tuple[int]]
-        self.vehicles_per_solution_route: tuple[int]
+        self._routes: tuple[tuple[int]] = tuple()
+        self.vehicles_per_solution_route: tuple[int] = (0,)
         if solution_name is not None:
             from jumanji.environments.routing.mandl.utils import load_solution_data
 
@@ -209,21 +209,26 @@ class DefaultGenerator(Generator):
         # First, allocate minimum vehicles to each route
         remaining_vehicles = total_vehicles - (num_routes * min_vehicles_per_route)
 
-        # Generate random proportions for remaining vehicles
-        props = jax.random.uniform(key, shape=(num_routes,))
+        # Generate random proportions using numpy (convert from JAX)
+        props = jax.random.uniform(key, shape=(num_routes,)).numpy()
         props = props / props.sum()
 
-        # Calculate additional vehicles per route
-        additional_vehicles = jnp.floor(props * remaining_vehicles).astype(int)
+        # Calculate additional vehicles using regular Python
+        additional_vehicles = []
+        remaining = remaining_vehicles
+        for p in props[:-1]:  # Process all but the last proportion
+            vehicles = int(p * remaining_vehicles)
+            additional_vehicles.append(vehicles)
+            remaining -= vehicles
 
-        # Add any remaining vehicles to the route with highest proportion
-        leftover = remaining_vehicles - additional_vehicles.sum()
-        additional_vehicles = additional_vehicles.at[jnp.argmax(props)].add(leftover)
+        # Add remaining vehicles to the last route
+        additional_vehicles.append(remaining)
 
-        # Add minimum vehicles to get final allocation
-        final_allocation = additional_vehicles + min_vehicles_per_route
+        # Add minimum vehicles and create final allocation
+        final_allocation = [v + min_vehicles_per_route for v in additional_vehicles]
 
-        return tuple(jnp.sort(final_allocation))
+        # Sort in descending order and return as tuple
+        return tuple(sorted(final_allocation, reverse=True))
 
     def __call__(self, key: chex.PRNGKey) -> State:
         # Split keys for different random operations

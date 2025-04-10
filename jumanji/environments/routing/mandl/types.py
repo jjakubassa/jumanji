@@ -169,6 +169,7 @@ class State:
     passengers: Passengers
     routes: RouteBatch
     current_time: Float[Array, ""]
+    vehicles_per_route: jnp.ndarray
     key: PRNGKeyArray
 
 
