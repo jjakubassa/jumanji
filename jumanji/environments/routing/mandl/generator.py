@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import abc
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional
 
 import chex
 import jax
@@ -198,37 +198,26 @@ class DefaultGenerator(Generator):
         num_routes: int,
         total_vehicles: int,
         min_vehicles_per_route: int = 1,
-    ) -> Tuple[int, ...]:
+    ) -> jnp.ndarray:
         """Generate random vehicle allocations ensuring minimum vehicles per route."""
-        if total_vehicles < num_routes * min_vehicles_per_route:
-            raise ValueError(
-                f"Not enough vehicles ({total_vehicles}) to ensure minimum "
-                f"of {min_vehicles_per_route} vehicles for {num_routes} routes"
-            )
-
         # First, allocate minimum vehicles to each route
         remaining_vehicles = total_vehicles - (num_routes * min_vehicles_per_route)
 
-        # Generate random proportions using numpy (convert from JAX)
-        props = jax.random.uniform(key, shape=(num_routes,)).numpy()
+        # Generate random proportions for remaining vehicles
+        props = jax.random.uniform(key, shape=(num_routes,))
         props = props / props.sum()
 
-        # Calculate additional vehicles using regular Python
-        additional_vehicles = []
-        remaining = remaining_vehicles
-        for p in props[:-1]:  # Process all but the last proportion
-            vehicles = int(p * remaining_vehicles)
-            additional_vehicles.append(vehicles)
-            remaining -= vehicles
+        # Calculate additional vehicles per route
+        additional_vehicles = jnp.floor(props * remaining_vehicles).astype(int)
 
-        # Add remaining vehicles to the last route
-        additional_vehicles.append(remaining)
+        # Add any remaining vehicles to the route with highest proportion
+        leftover = remaining_vehicles - additional_vehicles.sum()
+        additional_vehicles = additional_vehicles.at[jnp.argmax(props)].add(leftover)
 
-        # Add minimum vehicles and create final allocation
-        final_allocation = [v + min_vehicles_per_route for v in additional_vehicles]
+        # Add minimum vehicles to get final allocation
+        final_allocation = additional_vehicles + min_vehicles_per_route
 
-        # Sort in descending order and return as tuple
-        return tuple(sorted(final_allocation, reverse=True))
+        return jnp.sort(final_allocation)
 
     def __call__(self, key: chex.PRNGKey) -> State:
         # Split keys for different random operations
@@ -244,7 +233,9 @@ class DefaultGenerator(Generator):
         # Handle vehicle allocation
         if self.vehicles_per_additional_fixed_route is not None:
             # Use specified allocation
-            vehicles_per_additional_fixed_route = self.vehicles_per_additional_fixed_route
+            vehicles_per_additional_fixed_route = jnp.array(
+                self.vehicles_per_additional_fixed_route
+            )
         elif self.random_vehicle_allocation and self.num_fix_routes > 0:
             vehicles_per_additional_fixed_route = self._generate_random_vehicle_allocation(
                 vehicle_key,
@@ -260,18 +251,20 @@ class DefaultGenerator(Generator):
                 extra_vehicles = remaining_vehicles % self.num_fix_routes
 
                 # Create allocation with extra vehicles distributed to first routes
-                vehicles_per_additional_fixed_route = tuple(
-                    base_vehicles + 1 if i < extra_vehicles else base_vehicles
-                    for i in range(self.num_fix_routes)
+                vehicles_per_additional_fixed_route = jnp.array(
+                    [
+                        base_vehicles + 1 if i < extra_vehicles else base_vehicles
+                        for i in range(self.num_fix_routes)
+                    ]
                 )
                 # Sort in descending order
-                vehicles_per_additional_fixed_route = tuple(
-                    sorted(vehicles_per_additional_fixed_route, reverse=True)
-                )
+                vehicles_per_additional_fixed_route = jnp.sort(vehicles_per_additional_fixed_route)[
+                    ::-1
+                ]
             else:
-                vehicles_per_additional_fixed_route = tuple()
+                vehicles_per_additional_fixed_route = jnp.array([])
 
-        # Create initial fleet
+        # Create initial fleet and get vehicle allocations
         initial_fleet, vehicles_per_route = create_initial_fleet(
             num_routes=self.num_fix_routes + self.num_flex_routes,
             num_flex_routes=self.num_flex_routes,
@@ -280,7 +273,6 @@ class DefaultGenerator(Generator):
             vehicles_per_additional_fixed_route=vehicles_per_additional_fixed_route,
             vehicle_capacity=self.vehicle_capacity,
         )
-        self._vehicles_per_route = vehicles_per_route
 
         # Create initial routes
         route_batch = create_initial_routes(
@@ -307,6 +299,7 @@ class DefaultGenerator(Generator):
             routes=route_batch,
             current_time=jnp.array(0.0),
             key=key,
+            vehicles_per_route=vehicles_per_route,  # Add to state
         )
 
         return state
