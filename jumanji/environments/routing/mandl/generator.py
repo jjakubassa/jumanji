@@ -131,6 +131,7 @@ class DefaultGenerator(Generator):
         solution_name: Optional[str] = None,
         allow_actions_fixed_routes: bool = True,
         random_vehicle_allocation: bool = False,
+        vehicles_per_additional_fixed_route: Optional[tuple[int, ...]] = None,
         passenger_init_mode: Literal[
             "evenly_spaced", "rush_hour", "uniform_random", "all_at_start"
         ] = "evenly_spaced",
@@ -149,6 +150,8 @@ class DefaultGenerator(Generator):
             max_route_length: Maximum length of routes
             solution_name: Optional name of solution file to load
             random_vehicle_allocation: Whether to randomly allocate vehicles to fixed routes
+            vehicles_per_additional_fixed_route: Optional allocation for additional fixed routes
+            allow_actions_fixed_routes: Whether to allow actions on fixed routes
             passenger_init_mode: Mode for initializing passengers
         """
         if buffer_time_start is None:
@@ -170,6 +173,24 @@ class DefaultGenerator(Generator):
 
         self.random_vehicle_allocation = random_vehicle_allocation
         self.passenger_init_mode = passenger_init_mode
+        self.vehicles_per_additional_fixed_route = vehicles_per_additional_fixed_route
+
+        # Validate vehicle allocations if specified
+        if vehicles_per_additional_fixed_route is not None:
+            if len(vehicles_per_additional_fixed_route) != num_fix_routes:
+                raise ValueError(
+                    f"Expected {num_fix_routes} vehicle counts for additional fixed routes, "
+                    f"got {len(vehicles_per_additional_fixed_route)}"
+                )
+
+            total_fixed_vehicles = sum(self.vehicles_per_solution_route) + sum(
+                vehicles_per_additional_fixed_route
+            )
+            if total_fixed_vehicles > total_vehicles:
+                raise ValueError(
+                    f"Total vehicles in fixed routes ({total_fixed_vehicles}) "
+                    f"exceeds total vehicles ({total_vehicles})"
+                )
 
     def _generate_random_vehicle_allocation(
         self,
@@ -216,7 +237,10 @@ class DefaultGenerator(Generator):
         )
 
         # Handle vehicle allocation
-        if self.random_vehicle_allocation and self.num_fix_routes > 0:
+        if self.vehicles_per_additional_fixed_route is not None:
+            # Use specified allocation
+            vehicles_per_additional_fixed_route = self.vehicles_per_additional_fixed_route
+        elif self.random_vehicle_allocation and self.num_fix_routes > 0:
             vehicles_per_additional_fixed_route = self._generate_random_vehicle_allocation(
                 vehicle_key,
                 self.num_fix_routes,

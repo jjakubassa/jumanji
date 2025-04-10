@@ -58,7 +58,6 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         self,
         generator: Optional[Generator] = None,
         viewer: Optional[Viewer] = None,
-        allow_actions_fixed_routes: bool = True,
     ) -> None:
         """Initialize the Mandl environment.
 
@@ -70,7 +69,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         """
         # Initialize generator with defaults if none provided
         self.generator = generator or DefaultGenerator()
-        self.allow_actions_fixed_routes = allow_actions_fixed_routes
+        self.allow_actions_fixed_routes = self.generator.allow_actions_fixed_routes
 
         # Initialize viewer
         self._viewer = viewer or MandlViewer(
