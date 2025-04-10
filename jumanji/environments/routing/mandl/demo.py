@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import tqdm
 
 from jumanji.environments.routing.mandl import Mandl
+from jumanji.environments.routing.mandl.generator import DefaultGenerator
 from jumanji.environments.routing.mandl.types import PassengerStatus, State
 
 # plt.style.use(["science", "ieee"])
@@ -34,7 +35,7 @@ def main() -> State:
     n_steps = 100
     buffer_steps = 50
     total_steps = n_steps + buffer_steps
-    env = Mandl(
+    generator = DefaultGenerator(
         network_name="mandl1",
         solution_name="yoo2023with8stops",
         runtime=n_steps,
@@ -45,7 +46,10 @@ def main() -> State:
         max_route_length=3,
         total_vehicles=99,
         passenger_init_mode="evenly_spaced",
+        random_vehicle_allocation=False,
     )
+
+    env = Mandl(generator)
 
     # Reset environment and get initial state
     key = jax.random.PRNGKey(42)

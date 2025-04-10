@@ -27,7 +27,6 @@
 # limitations under the License.
 
 from dataclasses import replace
-from functools import partial
 from importlib import resources
 from typing import Literal
 
@@ -371,7 +370,6 @@ def create_initial_fleet(
     return initial_fleet, tuple(vehicles_per_route)
 
 
-@partial(jax.jit, static_argnums=(3,))
 def assign_routes_to_fleet(
     fleet: Fleet,
     route_batch: RouteBatch,

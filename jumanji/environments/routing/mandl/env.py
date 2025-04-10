@@ -14,7 +14,7 @@
 
 from dataclasses import replace
 from functools import cached_property
-from typing import Final, Literal, Optional
+from typing import Optional
 
 import chex
 import jax
@@ -25,6 +25,7 @@ from jaxtyping import Array, Bool, Int
 
 from jumanji import specs
 from jumanji.env import Environment
+from jumanji.environments.routing.mandl.generator import DefaultGenerator, Generator
 from jumanji.environments.routing.mandl.types import (
     Observation,
     PassengerStatus,
@@ -46,12 +47,6 @@ from jumanji.environments.routing.mandl.types import (
 )
 from jumanji.environments.routing.mandl.utils import (
     assign_routes_to_fleet,
-    create_initial_fleet,
-    create_initial_passengers,
-    create_initial_routes,
-    load_demand_data,
-    load_network_data,
-    load_solution_data,
 )
 from jumanji.environments.routing.mandl.viewer import MandlViewer
 from jumanji.types import TimeStep, restart, termination, transition
@@ -61,129 +56,65 @@ from jumanji.viewer import Viewer
 class Mandl(Environment[State, specs.BoundedArray, Observation]):
     def __init__(
         self,
+        generator: Optional[Generator] = None,
         viewer: Optional[Viewer] = None,
-        network_name: Literal[
-            "mandl1", "ceder1", "mumford0", "mumford1", "mumford2", "mumford3"
-        ] = "mandl1",
-        runtime: float = 150.0,
-        buffer_time_end: float = 50.0,
-        buffer_time_start: Optional[float] = None,
-        vehicle_capacity: int = 50,
-        solution_name: Optional[str] = None,  # None means no solution from file
-        num_fix_routes: int = 1,
-        num_flex_routes: int = 16,
-        max_route_length: int = 8,
         allow_actions_fixed_routes: bool = True,
-        total_vehicles: int = 99,
-        vehicles_per_additional_fixed_route: Optional[tuple[int, ...]] = None,  # New parameter
-        passenger_init_mode: Literal[
-            "evenly_spaced", "rush_hour", "uniform_random", "all_at_start"
-        ] = "evenly_spaced",
     ) -> None:
-        self.network_name: Final = network_name
-        self.runtime: Final = runtime
-        self.num_flex_routes: Final = num_flex_routes
-        self.passenger_init_mode: Final = passenger_init_mode
-        self.vehicle_capacity: Final = vehicle_capacity
-        self.buffer_time_start: Final = (
-            buffer_time_start if buffer_time_start is not None else max_route_length
-        )
-        self.buffer_time_end: Final = buffer_time_end
-        self.total_vehicles: Final = total_vehicles
-        self.allow_actions_fixed_routes: Final = allow_actions_fixed_routes
+        """Initialize the Mandl environment.
+
+        Args:
+            generator: Generator for creating problem instances. If None, uses DefaultGenerator
+                with default parameters.
+            viewer: Viewer for rendering. If None, uses MandlViewer with "human" render mode.
+            allow_actions_fixed_routes: Whether to allow actions on fixed routes.
+        """
+        # Initialize generator with defaults if none provided
+        self.generator = generator or DefaultGenerator()
+        self.allow_actions_fixed_routes = allow_actions_fixed_routes
+
+        # Initialize viewer
         self._viewer = viewer or MandlViewer(
             name="Mandl",
             render_mode="human",
         )
 
-        # Load all static data once during initialization
-        self._network_data = load_network_data(network_name)
-        self._routes: list[list[int]] = []
+        # Store important parameters from generator for easy access
+        self.num_flex_routes = self.generator.num_flex_routes
+        self.num_fix_routes = self.generator.num_fix_routes
+        self.num_solution_routes = self.generator.num_solution_routes
+        self.total_vehicles = self.generator.total_vehicles
+        self.vehicle_capacity = self.generator.vehicle_capacity
+        self.runtime = self.generator.runtime
+        self.buffer_time_start = self.generator.buffer_time_start
+        self.buffer_time_end = self.generator.buffer_time_end
+        self.max_route_length = self.generator.max_route_length
 
-        # Load solution routes and their vehicle allocations if specified
-        vehicles_per_solution_route: list[int] = []
-        if solution_name is not None:
-            self._routes, vehicles_per_solution_route = load_solution_data(
-                network_name, solution_name
-            )
-            self.num_solution_routes = len(self._routes)
-            print(f"\nUsing solution '{solution_name}' with {self.num_solution_routes} routes")
-        else:
-            self.num_solution_routes = 0
-
-        self.num_fix_routes = num_fix_routes
-
-        # Validate vehicle allocations for additional fixed routes
-        if vehicles_per_additional_fixed_route is not None:
-            if len(vehicles_per_additional_fixed_route) != num_fix_routes:
-                raise ValueError(
-                    f"Expected {num_fix_routes} vehicle counts for additional fixed routes, "
-                    f"got {len(vehicles_per_additional_fixed_route)}"
-                )
-
-            total_fixed_vehicles = sum(vehicles_per_solution_route) + sum(
-                vehicles_per_additional_fixed_route
-            )
-            if total_fixed_vehicles > total_vehicles:
-                raise ValueError(
-                    f"Total vehicles in fixed routes ({total_fixed_vehicles}) "
-                    f"exceeds total vehicles ({total_vehicles})"
-                )
-
-        # Check if solution routes exceed max_stops
-        max_solution_length = max(len(route) for route in self._routes) if self._routes else 0
-        if max_solution_length > max_route_length:
-            print(
-                f"WARNING: Solution routes contain up to {max_solution_length} stops, "
-                f"which exceeds the specified max_stops={max_route_length}. "
-                f"Using {max_solution_length} as maximum."
-            )
-        self.max_route_length: Final = max(max_solution_length, max_route_length)
-
-        # Create static components once
-        self._route_batch = create_initial_routes(
-            self._routes,
-            num_fix_routes=num_fix_routes,
-            num_flex_routes=self.num_flex_routes,
-            network_data=self._network_data,
-            max_stops=self.max_route_length,
-            key=None,
-        )
-
-        # Create initial fleet with vehicle allocations
-        self._initial_fleet, self._vehicles_per_route = create_initial_fleet(
-            num_routes=self.num_fix_routes + self.num_flex_routes,
-            num_flex_routes=self.num_flex_routes,
-            total_vehicles=self.total_vehicles,
-            vehicles_per_solution_route=vehicles_per_solution_route,
-            vehicles_per_additional_fixed_route=vehicles_per_additional_fixed_route,
-            vehicle_capacity=self.vehicle_capacity,
-        )
-
-        # Load passenger demand data
-        self._demand_data = load_demand_data(network_name)
+        # Store network data and dimensions
+        self._network_data = self.generator.network_data
         self._network_shortest_times = floyd_warshall(self._network_data.travel_times).flatten()
+
+        # Store important dimensions
+        self.num_nodes = len(self._network_data.is_terminal)
+        self.num_routes = self.num_fix_routes + self.num_flex_routes + self.num_solution_routes
+        self.num_vehicles = self.total_vehicles
 
         super().__init__()
 
     def reset(self, key: chex.PRNGKey) -> tuple[State, TimeStep[Observation]]:
-        """Reset the environment to an initial state."""
-        initial_state = State(
-            network=self._network_data,
-            fleet=self._initial_fleet,
-            passengers=create_initial_passengers(
-                self._demand_data,
-                key,
-                runtime=self.runtime,
-                buffer_time_start=self.buffer_time_start,
-                buffer_time_end=self.buffer_time_end,
-                mode=self.passenger_init_mode,
-            ),
-            routes=self._route_batch,
-            current_time=jnp.array(0.0),
-            key=key,
-        )
+        """Reset the environment to an initial state.
 
+        Args:
+            key: Random key for initialization.
+
+        Returns:
+            A tuple containing:
+                - The initial state
+                - The initial timestep with observation
+        """
+        # Generate initial state using the generator
+        initial_state = self.generator(key)
+
+        # Create initial timestep
         timestep = restart(
             observation=self.get_observation(initial_state),
             extras=self._calculate_metrics(initial_state, self.get_observation(initial_state)),
@@ -215,7 +146,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                         s.fleet,
                         s.routes,
                         self._network_data,
-                        self._vehicles_per_route,
+                        self.generator.get_current_vehicles_per_route(),
                         self.max_route_length,
                     ),
                 ),
@@ -374,10 +305,10 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
     @cached_property
     def observation_spec(self) -> specs.Spec[Observation]:
         """Returns the observation spec."""
-        num_nodes = len(self._network_data.is_terminal)
-        num_routes = self._route_batch.num_routes
+        num_nodes = self.num_nodes
+        num_routes = self.num_routes
         max_route_length = self.max_route_length
-        num_vehicles = self._initial_fleet.num_vehicles
+        num_vehicles = self.num_vehicles
 
         return specs.Spec(
             Observation,
@@ -518,10 +449,9 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         - Which node to add as the next stop (0 to num_nodes-1)
         - Or perform no-op (num_nodes)
         """
-        total_routes = self.num_solution_routes + self.num_fix_routes + self.num_flex_routes
         return specs.MultiDiscreteArray(
             num_values=jnp.full(
-                shape=(total_routes,),
+                shape=(self.num_routes,),
                 fill_value=self._network_data.num_nodes
                 + 1,  # num_nodes + 1 possible actions per route
                 dtype=jnp.int32,
@@ -689,3 +619,36 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 allowed_actions,  # Other cases: connected nodes + no-op
             )
         return action_mask
+
+    def _generate_random_vehicle_allocation(
+        self,
+        key: chex.PRNGKey,
+        num_routes: int,
+        total_vehicles: int,
+        min_vehicles_per_route: int = 1,
+    ) -> tuple[int, ...]:
+        """Generate random vehicle allocations ensuring minimum vehicles per route."""
+        if total_vehicles < num_routes * min_vehicles_per_route:
+            raise ValueError(
+                f"Not enough vehicles ({total_vehicles}) to ensure minimum "
+                f"of {min_vehicles_per_route} vehicles for {num_routes} routes"
+            )
+
+        # First, allocate minimum vehicles to each route
+        remaining_vehicles = total_vehicles - (num_routes * min_vehicles_per_route)
+
+        # Generate random proportions for remaining vehicles
+        props = jax.random.uniform(key, shape=(num_routes,))
+        props = props / props.sum()
+
+        # Calculate additional vehicles per route
+        additional_vehicles = jnp.floor(props * remaining_vehicles).astype(int)
+
+        # Add any remaining vehicles to the route with highest proportion
+        leftover = remaining_vehicles - additional_vehicles.sum()
+        additional_vehicles = additional_vehicles.at[jnp.argmax(props)].add(leftover)
+
+        # Add minimum vehicles to get final allocation
+        final_allocation = additional_vehicles + min_vehicles_per_route
+
+        return tuple(final_allocation)

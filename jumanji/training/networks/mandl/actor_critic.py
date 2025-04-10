@@ -340,7 +340,7 @@ def make_actor_critic_networks_mandl(
     """Create actor-critic networks for Mandl environment."""
     # Change this to use total number of routes instead of flex routes
     num_values = jnp.full(
-        shape=(mandl._route_batch.num_routes,),  # Use total routes instead of flex routes
+        shape=(mandl.num_routes,),  # Use total routes instead of flex routes
         fill_value=mandl._network_data.num_nodes + 1,
         dtype=jnp.int32,
     )

@@ -18,6 +18,7 @@ import jax.numpy as jnp
 import pytest
 
 from jumanji.environments.routing.mandl.env import Mandl
+from jumanji.environments.routing.mandl.generator import DefaultGenerator
 from jumanji.environments.routing.mandl.types import (
     Fleet,
     NetworkData,
@@ -34,7 +35,8 @@ class TestActionMasking:
     @pytest.fixture
     def env(self) -> Mandl:
         """Create a Mandl environment with 2 flex routes."""
-        return Mandl(num_flex_routes=2)
+        gen = DefaultGenerator(num_flex_routes=2)
+        return Mandl(gen)
 
     @pytest.fixture
     def simple_network(self) -> NetworkData:
