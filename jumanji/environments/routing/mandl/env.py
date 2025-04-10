@@ -137,9 +137,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
         def normal_step(state: State) -> State:
             # 2. Check if grace period is over and fleet needs route assignment
             needs_route_assignment = jnp.all(state.fleet.route_ids == -1)
-            import pudb
 
-            pudb.set_trace()
             state = jax.lax.cond(
                 needs_route_assignment,
                 lambda s: replace(
