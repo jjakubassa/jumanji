@@ -47,6 +47,7 @@ class Generator(abc.ABC):
         buffer_time_start: float,
         buffer_time_end: float,
         max_route_length: int,
+        allow_actions_fixed_routes: bool,
         solution_name: Optional[str] = None,
     ):
         """Initialize the generator with problem parameters.
@@ -72,6 +73,7 @@ class Generator(abc.ABC):
         self.buffer_time_start = buffer_time_start
         self.buffer_time_end = buffer_time_end
         self.max_route_length = max_route_length
+        self.allow_actions_fixed_routes = allow_actions_fixed_routes
 
         # Load static data
         self.network_data = load_network_data(network_name)
@@ -127,6 +129,7 @@ class DefaultGenerator(Generator):
         buffer_time_start: Optional[float] = None,
         max_route_length: int = 8,
         solution_name: Optional[str] = None,
+        allow_actions_fixed_routes: bool = True,
         random_vehicle_allocation: bool = False,
         passenger_init_mode: Literal[
             "evenly_spaced", "rush_hour", "uniform_random", "all_at_start"
@@ -162,6 +165,7 @@ class DefaultGenerator(Generator):
             buffer_time_end=buffer_time_end,
             max_route_length=max_route_length,
             solution_name=solution_name,
+            allow_actions_fixed_routes=allow_actions_fixed_routes,
         )
 
         self.random_vehicle_allocation = random_vehicle_allocation
