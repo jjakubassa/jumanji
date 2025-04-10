@@ -27,6 +27,7 @@
 # limitations under the License.
 
 from dataclasses import replace
+from functools import partial
 from importlib import resources
 from typing import Literal
 
@@ -223,7 +224,9 @@ def create_initial_passengers(
     )
 
 
-def load_solution_data(network_name: str, solution_name: str) -> tuple[list[list[int]], list[int]]:
+def load_solution_data(
+    network_name: str, solution_name: str
+) -> tuple[tuple[tuple[int]], tuple[int]]:
     """
     Load solution data from file and return the specified solution.
 
@@ -244,7 +247,7 @@ def load_solution_data(network_name: str, solution_name: str) -> tuple[list[list
     solutions: dict[str, dict[str, list]] = {}
     current_solution = None
     current_section = None
-    routes: list[list[int]] = []
+    routes: list[tuple[int, ...]] = []
     vehicles: list[int] = []
 
     for line in content.split("\n"):
@@ -280,7 +283,7 @@ def load_solution_data(network_name: str, solution_name: str) -> tuple[list[list
         if current_section == "routes":
             # Convert from 1-based to 0-based indexing
             route = [int(node) - 1 for node in line.split("-")]
-            routes.append(route)
+            routes.append(tuple(route))
         elif current_section == "vehicles":
             vehicles.append(int(line))
 
@@ -295,7 +298,7 @@ def load_solution_data(network_name: str, solution_name: str) -> tuple[list[list
         )
 
     solution = solutions[solution_name]
-    return solution["routes"], solution["vehicles"]
+    return tuple(solution["routes"]), tuple(solution["vehicles"])
 
 
 def calculate_route_total_time(route: list[int], travel_times: jnp.ndarray) -> Float[Array, ""]:
@@ -313,7 +316,7 @@ def create_initial_fleet(
     num_routes: int,
     num_flex_routes: int,
     total_vehicles: int,
-    vehicles_per_solution_route: list[int],
+    vehicles_per_solution_route: tuple[int],
     vehicles_per_additional_fixed_route: Optional[tuple[int, ...]],
     vehicle_capacity: int,
 ) -> tuple[Fleet, tuple[int, ...]]:
@@ -352,12 +355,6 @@ def create_initial_fleet(
         if remaining_vehicles > 0:
             vehicles_per_route[-1] += remaining_vehicles
 
-    total_allocated = sum(vehicles_per_route)
-    assert total_allocated == total_vehicles, (
-        f"Vehicle allocation mismatch: {total_allocated} != {total_vehicles}\n"
-        f"Allocation: {vehicles_per_route}"
-    )
-
     # Create initial fleet with total vehicles
     initial_fleet = Fleet(
         route_ids=jnp.full((total_vehicles,), -1, dtype=jnp.int32),  # Initialize with -1
@@ -370,6 +367,7 @@ def create_initial_fleet(
     return initial_fleet, tuple(vehicles_per_route)
 
 
+@partial(jax.jit, static_argnums=(3,))
 def assign_routes_to_fleet(
     fleet: Fleet,
     route_batch: RouteBatch,
@@ -481,7 +479,7 @@ def assign_routes_to_fleet(
 
 
 def create_initial_routes(
-    solution_routes: list[list[int]],
+    solution_routes: tuple[tuple[int]],
     num_fix_routes: int,  # Additional fixed routes beyond solution routes
     num_flex_routes: int,
     network_data: NetworkData,
@@ -514,7 +512,7 @@ def create_initial_routes(
 
     # Add solution routes
     for _, route in enumerate(solution_routes):
-        padded = route + [-1] * (max_length - len(route))
+        padded = list(route) + [-1] * (max_length - len(route))
         padded_routes.append(padded)
 
     # Add additional fixed routes (empty initially)

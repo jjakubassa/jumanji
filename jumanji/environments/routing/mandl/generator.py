@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import abc
-from typing import List, Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 import chex
 import jax
@@ -80,8 +80,8 @@ class Generator(abc.ABC):
         self.demand_data = load_demand_data(network_name)
 
         # Load solution routes if specified
-        self._routes: List[List[int]] = []
-        self.vehicles_per_solution_route: List[int] = []
+        self._routes: tuple[tuple[int]]
+        self.vehicles_per_solution_route: tuple[int]
         if solution_name is not None:
             from jumanji.environments.routing.mandl.utils import load_solution_data
 
