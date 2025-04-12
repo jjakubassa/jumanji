@@ -359,9 +359,9 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
             ),
             route_frequencies=specs.BoundedArray(
                 shape=(num_routes,),
-                dtype=float,
-                minimum=0.0,
-                maximum=float("inf"),
+                dtype=int,
+                minimum=0,
+                maximum=num_routes,
             ),
             num_flex_routes=specs.BoundedArray(
                 shape=(1,),
