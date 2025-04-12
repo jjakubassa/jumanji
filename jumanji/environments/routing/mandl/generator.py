@@ -281,6 +281,7 @@ class DefaultGenerator(Generator):
             num_flex_routes=self.num_flex_routes,
             network_data=self.network_data,
             max_stops=self.max_route_length,
+            vehicles_per_route=vehicles_per_route,
             key=route_key,
         )
 
@@ -299,7 +300,6 @@ class DefaultGenerator(Generator):
             routes=route_batch,
             current_time=jnp.array(0.0),
             key=key,
-            vehicles_per_route=vehicles_per_route,  # Add to state
         )
 
         return state

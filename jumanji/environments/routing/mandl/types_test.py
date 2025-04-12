@@ -104,7 +104,7 @@ class TestHandleCompletedPassengers:
         routes = RouteBatch(
             types=jnp.array([RouteType.FIXED]),
             stops=jnp.array([[0, 1, -1]]),
-            frequencies=jnp.ones(1),
+            vehicles_per_route=jnp.ones(1),
             num_flex_routes=jnp.array(0),
             num_fix_routes=jnp.array(1),
         )
@@ -191,7 +191,7 @@ class TestHandleCompletedPassengers:
                         [0, 1, 2, -1],  # Route for vehicle 2
                     ]
                 ),
-                frequencies=jnp.ones(3),
+                vehicles_per_route=jnp.ones(3),
                 num_flex_routes=jnp.array(0),
                 num_fix_routes=jnp.array(3),
             ),
@@ -341,7 +341,7 @@ class TestHandleCompletedPassengers:
                         [1, 2, 0, -1],  # Route: 1->2->0
                     ]
                 ),
-                frequencies=jnp.ones(2),
+                vehicles_per_route=jnp.ones(2),
                 num_flex_routes=jnp.array(0),
                 num_fix_routes=jnp.array(2),
             ),
@@ -405,7 +405,7 @@ class TestHandleCompletedPassengers:
             routes=RouteBatch(
                 types=jnp.array([RouteType.FIXED]),
                 stops=jnp.array([[0, 1, 2, -1]]),
-                frequencies=jnp.ones(1),
+                vehicles_per_route=jnp.ones(1),
                 num_flex_routes=jnp.array(0),
                 num_fix_routes=jnp.array(1),
             ),
@@ -484,7 +484,7 @@ class TestHandleCompletedPassengers:
                         [1, 2, 3, -1],  # Route 2: 1-2-3
                     ]
                 ),
-                frequencies=jnp.ones(2),
+                vehicles_per_route=jnp.ones(2),
                 num_flex_routes=jnp.array(0),
                 num_fix_routes=jnp.array(2),
             ),
@@ -553,7 +553,7 @@ class TestHandleCompletedPassengers:
             routes=RouteBatch(
                 types=jnp.array([RouteType.FIXED]),
                 stops=jnp.array([[0, 1, 2, -1]]),
-                frequencies=jnp.ones(1),
+                vehicles_per_route=jnp.ones(1),
                 num_flex_routes=jnp.array(0),
                 num_fix_routes=jnp.array(1),
             ),
@@ -695,7 +695,7 @@ class TestRouteBatch:
                 ]
             ),
             stops=jnp.full((num_routes, max_stops), -1, dtype=int),  # All routes start empty
-            frequencies=jnp.ones(num_routes),
+            vehicles_per_route=jnp.ones(num_routes),
             num_flex_routes=jnp.array(3),
             num_fix_routes=jnp.array(2),
         )
@@ -746,7 +746,9 @@ class TestRouteBatch:
 
         # Check that other properties remain unchanged
         chex.assert_trees_all_equal(updated_batch.types, mixed_routes.types)
-        chex.assert_trees_all_equal(updated_batch.frequencies, mixed_routes.frequencies)
+        chex.assert_trees_all_equal(
+            updated_batch.vehicles_per_route, mixed_routes.vehicles_per_route
+        )
         chex.assert_trees_all_equal(updated_batch.num_flex_routes, mixed_routes.num_flex_routes)
         chex.assert_trees_all_equal(updated_batch.num_fix_routes, mixed_routes.num_fix_routes)
 
@@ -799,7 +801,9 @@ class TestRouteBatch:
 
         # Check that other properties remain unchanged
         chex.assert_trees_all_equal(updated_batch.types, mixed_full_empty.types)
-        chex.assert_trees_all_equal(updated_batch.frequencies, mixed_full_empty.frequencies)
+        chex.assert_trees_all_equal(
+            updated_batch.vehicles_per_route, mixed_full_empty.vehicles_per_route
+        )
         chex.assert_trees_all_equal(updated_batch.num_flex_routes, mixed_full_empty.num_flex_routes)
         chex.assert_trees_all_equal(updated_batch.num_fix_routes, mixed_full_empty.num_fix_routes)
 
@@ -1264,7 +1268,7 @@ class TestState:
                     [2, 1, 0, -1],  # Route 2: 2->1->0
                 ]
             ),
-            frequencies=jnp.ones(2),
+            vehicles_per_route=jnp.ones(2),
             num_flex_routes=jnp.array(1),
             num_fix_routes=jnp.array(1),
         )
@@ -1348,7 +1352,7 @@ class TestState:
                     [0, 1, -1],  # Flexible route between nodes 0 and 1
                 ]
             ),
-            frequencies=jnp.ones(2),
+            vehicles_per_route=jnp.ones(2),
             num_flex_routes=jnp.array(1),
             num_fix_routes=jnp.array(1),
         )
@@ -1431,7 +1435,7 @@ class TestFleetMovement:
         routes = RouteBatch(
             types=jnp.array([RouteType.FIXED]),
             stops=jnp.array([[0, 1, 2]]),  # Simple route: 0->1->2
-            frequencies=jnp.ones(1),
+            vehicles_per_route=jnp.ones(1),
             num_flex_routes=jnp.array(0),
             num_fix_routes=jnp.array(1),
         )
@@ -1553,7 +1557,7 @@ class TestAssignPassengers:
                 ],
                 dtype=int,
             ),
-            frequencies=jnp.ones(2, dtype=jnp.float32),
+            vehicles_per_route=jnp.ones(2, dtype=jnp.float32),
             num_flex_routes=jnp.array(0),
             num_fix_routes=jnp.array(2),
         )
@@ -1671,7 +1675,7 @@ class TestAssignPassengers:
                         [0, 1, 3, 4, 2, -1],  # Slow route
                     ]
                 ),
-                frequencies=jnp.ones(2),
+                vehicles_per_route=jnp.ones(2),
                 num_flex_routes=jnp.array(0),
                 num_fix_routes=jnp.array(2),
             ),
@@ -1832,7 +1836,7 @@ class TestFindBestTransferRoute:
                     [1, 2, 3, -1],  # Route 1: 1-2-3
                 ]
             ),
-            frequencies=jnp.ones(2),
+            vehicles_per_route=jnp.ones(2),
             num_flex_routes=jnp.array(0),
             num_fix_routes=jnp.array(2),
         )
@@ -1925,7 +1929,7 @@ class TestFindBestTransferRoute:
                     [1, 2, 3, -1],  # Route 1: 1-2-3
                 ]
             ),
-            frequencies=jnp.ones(2),
+            vehicles_per_route=jnp.ones(2),
             num_flex_routes=jnp.array(0),
             num_fix_routes=jnp.array(2),
         )

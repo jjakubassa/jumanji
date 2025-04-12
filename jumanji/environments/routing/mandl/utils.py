@@ -370,7 +370,7 @@ def assign_routes_to_fleet(
     fleet: Fleet,
     route_batch: RouteBatch,
     network_data: NetworkData,
-    vehicles_per_route: jax.Array,  # Array of vehicle counts per route
+    vehicles_per_route: jax.Array,
     max_route_length: int,
 ) -> Fleet:
     """Assign routes to unassigned fleet using predefined vehicle allocations."""
@@ -467,6 +467,7 @@ def create_initial_routes(
     num_flex_routes: int,
     network_data: NetworkData,
     max_stops: int,
+    vehicles_per_route: jnp.ndarray,
     key: Optional[PRNGKeyArray] = None,
 ) -> RouteBatch:
     """Create initial routes combining solution, additional fixed, and flexible routes.
@@ -516,7 +517,7 @@ def create_initial_routes(
     route_batch = RouteBatch(
         types=route_types.astype(jnp.int32),
         stops=jnp.array(padded_routes, dtype=jnp.int32),
-        frequencies=jnp.ones(total_routes, dtype=jnp.float32),
+        vehicles_per_route=vehicles_per_route,
         num_flex_routes=jnp.array(num_flex_routes),
         num_fix_routes=jnp.array(total_fix_routes),  # Total fixed routes including solution
     )

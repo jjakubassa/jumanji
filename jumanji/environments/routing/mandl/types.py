@@ -84,7 +84,7 @@ class RouteBatch:
 
     types: Int[Array, " num_routes"]  # dtype: RouteType
     stops: Int[Array, "num_routes max_route_length"]
-    frequencies: Float[Array, " num_routes"]
+    vehicles_per_route: Float[Array, " num_routes"]
     num_flex_routes: Int[Array, ""]
     num_fix_routes: Int[Array, ""]
 
@@ -169,7 +169,6 @@ class State:
     passengers: Passengers
     routes: RouteBatch
     current_time: Float[Array, ""]
-    vehicles_per_route: jnp.ndarray
     key: PRNGKeyArray
 
 

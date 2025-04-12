@@ -53,7 +53,7 @@ class TestActionMasking:
         return RouteBatch(
             types=jnp.array([RouteType.FLEXIBLE, RouteType.FLEXIBLE]),
             stops=jnp.array([[-1, -1, -1], [-1, -1, -1]]),
-            frequencies=jnp.ones(2),
+            vehicles_per_route=jnp.ones(2),
             num_flex_routes=jnp.array(2),
             num_fix_routes=jnp.array(0),
         )
