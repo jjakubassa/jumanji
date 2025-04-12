@@ -81,7 +81,7 @@ class Generator(abc.ABC):
 
         # Load solution routes if specified
         self._routes: tuple[tuple[int]] = tuple()
-        self.vehicles_per_solution_route: tuple[int] = (0,)
+        self.vehicles_per_solution_route: tuple[int] = tuple()
         if solution_name is not None:
             from jumanji.environments.routing.mandl.utils import load_solution_data
 

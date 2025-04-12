@@ -326,8 +326,9 @@ def create_initial_fleet(
 
     # First, allocate solution routes if any
     for vehicles in vehicles_per_solution_route:
-        vehicles_per_route.append(vehicles)
-        remaining_vehicles -= vehicles
+        if vehicles > 0:
+            vehicles_per_route.append(vehicles)
+            remaining_vehicles -= vehicles
 
     # Then, allocate additional fixed routes if specified
     if vehicles_per_additional_fixed_route is not None:
