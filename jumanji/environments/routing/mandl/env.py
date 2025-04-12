@@ -361,7 +361,7 @@ class Mandl(Environment[State, specs.BoundedArray, Observation]):
                 shape=(num_routes,),
                 dtype=int,
                 minimum=0,
-                maximum=num_routes,
+                maximum=num_vehicles,
             ),
             num_flex_routes=specs.BoundedArray(
                 shape=(1,),
