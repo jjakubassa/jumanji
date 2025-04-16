@@ -170,6 +170,7 @@ class DefaultGenerator(Generator):
             buffer_time_end=buffer_time_end,
             max_route_length=max_route_length,
             solution_name=solution_name,
+            solution_path=solution_path,
             allow_actions_fixed_routes=allow_actions_fixed_routes,
         )
 
