@@ -87,7 +87,7 @@ class Generator(abc.ABC):
             from jumanji.environments.routing.mandl.utils import load_solution_data
 
             self._routes, self.vehicles_per_solution_route = load_solution_data(
-                network_name, solution_name
+                network_name, solution_name, solution_path
             )
             self.num_solution_routes = len(self._routes)
         else:
