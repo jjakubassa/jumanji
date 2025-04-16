@@ -224,23 +224,28 @@ def create_initial_passengers(
 
 
 def load_solution_data(
-    network_name: str, solution_name: str
-) -> tuple[tuple[tuple[int]], tuple[int]]:
+    network_name: str, solution_name: str, solution_path: Optional[str] = None) -> tuple[tuple[tuple[int]], tuple[int]]:
     """
     Load solution data from file and return the specified solution.
 
     Args:
         network_name: Name of the network (e.g., 'mandl1')
         solution_name: Name of the solution to load
+        solution_path: Optional custom file path to load solution from
 
     Returns:
         Tuple of (routes, vehicles_per_route)
     """
-    assets_package = f"jumanji.environments.routing.mandl.assets.{network_name}"
-    solution_file = f"{network_name}_solution.txt"
+    # Read file content from either custom path or package resources
+    if solution_path is not None:
+        with open(solution_path, 'r') as f:
+            content = f.read()
+    else:
+        assets_package = f"jumanji.environments.routing.mandl.assets.{network_name}"
+        solution_file = f"{network_name}_solution.txt"
 
-    with resources.files(assets_package).joinpath(solution_file).open("r") as f:
-        content = f.read()
+        with resources.files(assets_package).joinpath(solution_file).open("r") as f:
+            content = f.read()
 
     # Split file into solution sections
     solutions: dict[str, dict[str, list]] = {}

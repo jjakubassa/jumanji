@@ -49,6 +49,7 @@ class Generator(abc.ABC):
         max_route_length: int,
         allow_actions_fixed_routes: bool,
         solution_name: Optional[str] = None,
+        solution_path: Optional[str] = None,
     ):
         """Initialize the generator with problem parameters.
 
@@ -131,6 +132,7 @@ class DefaultGenerator(Generator):
         solution_name: Optional[str] = None,
         allow_actions_fixed_routes: bool = True,
         random_vehicle_allocation: bool = False,
+        solution_path: Optional[str] = None,
         vehicles_per_additional_fixed_route: Optional[tuple[int, ...]] = None,
         passenger_init_mode: Literal[
             "evenly_spaced", "rush_hour", "uniform_random", "all_at_start"
