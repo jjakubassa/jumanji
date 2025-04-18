@@ -12,6 +12,20 @@ vehicles:
 29
 30
 
+[yoo2023with15stops]
+name: Yoo et. al (2023) at most 15 stops per route
+num_routes: 4
+routes:
+9–15–8–6–3–2–4–12
+2–5–4–6–8–10–14–13–11–12
+9–15–7–10–8–6–4–12–11–13
+1–2–3–6–8–15–7–10–11–12
+vehicles:
+14
+26
+29
+30
+
 [yoo2023with8stopsreplace]
 name: Yoo et. al (2023) at most 8 stops per route but one third of vehicles is removed
 num_routes: 4
