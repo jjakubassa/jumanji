@@ -277,6 +277,9 @@ class DefaultGenerator(Generator):
             vehicle_capacity=self.vehicle_capacity,
         )
 
+        # Assign the vehicle allocation to the generator's internal state
+        self._vehicles_per_route = vehicles_per_route
+
         # Create initial routes
         route_batch = create_initial_routes(
             self._routes,
